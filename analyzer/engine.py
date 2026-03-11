@@ -116,18 +116,13 @@ class SetupAnalyzer:
         exit_mask = corner_mask & (self.df['Throttle'] > 0.2) & (self.df['SteeringWheelAngle'].diff().abs() < 0)
 
         # Handling Heuristics
-        # Heuristic: Understeer = High steering angle for low yaw rate compared to session average
-        # Heuristic: Oversteer = High yaw rate for low steering angle
-        
         # Current Setup Context
         front_arb = self._get_setup_value('Chassis', 'FrontAntiRollBar')
         rear_arb = self._get_setup_value('Chassis', 'RearAntiRollBar')
-        wing = self._get_setup_value('Aero', 'RearWingSetting')
 
         # Entry Analysis
         if entry_mask.any():
             entry_data = self.df[entry_mask]
-            # Simple check: if steer/yaw ratio is high
             ratio = (entry_data['SteeringWheelAngle'].abs() / (entry_data['YawRate'].abs() + 0.1)).mean()
             if ratio > 5.0: # High ratio -> Understeer
                 advice = "Entry Understeer detected."
@@ -150,23 +145,23 @@ class SetupAnalyzer:
         # Exit Analysis
         if exit_mask.any():
             exit_data = self.df[exit_mask]
-            # Check for yaw spikes during throttle application
             yaw_accel = exit_data['YawRate'].diff().abs().max()
             if yaw_accel > 0.1:
                 advice = "Exit Oversteer: The rear is stepping out on power."
                 if rear_arb: advice += f" Consider softening Rear ARB (current: {rear_arb}) or increasing Wing."
                 self.recommendations.append(advice)
 
-    # ... (rest of methods remain unchanged or slightly tweaked for setup context)
     def _analyze_strategy(self):
         if 'FuelLevel' not in self.df.columns:
             return
-        fuel_start = self.df['FuelLevel'].iloc[0]
-        fuel_end = self.df['FuelLevel'].iloc[-1]
+        # Convert Liters to Gallons
+        L_TO_GAL = 0.264172
+        fuel_start = self.df['FuelLevel'].iloc[0] * L_TO_GAL
+        fuel_end = self.df['FuelLevel'].iloc[-1] * L_TO_GAL
         fuel_used = fuel_start - fuel_end
         fuel_used = max(0, fuel_used)
         self.strategy_diagnostics['FuelPerLap'] = fuel_used
-        last_fuel = self.df['FuelLevel'].iloc[-1]
+        last_fuel = (self.df['FuelLevel'].iloc[-1]) * L_TO_GAL
         if fuel_used > 0:
             est_laps = last_fuel / fuel_used
             self.strategy_diagnostics['EstimatedLapsRemaining'] = est_laps
@@ -229,7 +224,7 @@ class SetupAnalyzer:
             if all(col in self.df.columns for col in wheel_speeds):
                 for index, row in high_brake_zones.iterrows():
                     car_speed = row['Speed']
-                    if car_speed > 10:
+                    if car_speed > 4.47: # > 10 MPH
                         front_speed = (row['LFspeed'] + row['RFspeed']) / 2.0
                         rear_speed = (row['LRspeed'] + row['RRspeed']) / 2.0
                         if front_speed < car_speed * 0.7:
@@ -244,7 +239,7 @@ class SetupAnalyzer:
         if all(col in self.df.columns for col in rh_channels):
             for col in rh_channels:
                 min_rh = self.df[col].min()
-                if min_rh < 0.005:
+                if min_rh < 0.005: # < 0.2 inches (approx 5mm)
                     self.recommendations.append(f"Bottoming out detected on {col[:2]}. Increase ride height.")
                     break
 
@@ -252,7 +247,9 @@ class SetupAnalyzer:
         rh_channels = ['LFrideHeight', 'RFrideHeight', 'LRrideHeight', 'RRrideHeight', 'Speed']
         if not all(col in self.df.columns for col in rh_channels):
             return
+        # high_speed = 93 MPH (41.67 m/s)
         high_speed = 41.67
+        # low_speed = 12.4 MPH (5.56 m/s)
         low_speed_data = self.df[self.df['Speed'] < 5.56]
         if low_speed_data.empty: low_speed_data = self.df.iloc[:10]
         static_front_rh = (low_speed_data['LFrideHeight'] + low_speed_data['RFrideHeight']).mean() / 2
@@ -264,10 +261,12 @@ class SetupAnalyzer:
             hs_rear_rh = (high_speed_data['LRrideHeight'] + high_speed_data['RRrideHeight']).mean() / 2
             hs_rake = hs_rear_rh - hs_front_rh
             rake_delta = hs_rake - static_rake
+            # Convert rake delta to inches for recommendations
+            rake_delta_in = rake_delta * 39.37
             if rake_delta > 0.010:
-                self.recommendations.append(f"High-speed rake increase detected (+{rake_delta*1000:.1f}mm). Stiffen front springs.")
+                self.recommendations.append(f"High-speed rake increase detected (+{rake_delta_in:.2f} in). Stiffen front springs.")
             elif rake_delta < -0.010:
-                self.recommendations.append(f"High-speed rake decrease detected ({rake_delta*1000:.1f}mm). Stiffen rear springs.")
+                self.recommendations.append(f"High-speed rake decrease detected ({rake_delta_in:.2f} in). Stiffen rear springs.")
 
     def _analyze_tire_imo(self):
         tire_prefixes = ['LF', 'RF', 'LR', 'RR']
@@ -276,21 +275,31 @@ class SetupAnalyzer:
             car_name = self.session_info['DriverInfo'].get('DriverCarShortName', '')
             if 'MX5' in car_name: car_type = "MX5"
             elif 'porsche' in car_name.lower() or '992' in car_name: car_type = "GT3"
-        max_spread = self.targets.get(car_type, {}).get('max_imo_spread', 8)
+        
+        max_spread = self.targets.get(car_type, {}).get('max_imo_spread', 15) # spread in F
+        
         for tire in tire_prefixes:
             temp_cols = [f'{tire}tempL', f'{tire}tempM', f'{tire}tempR']
             if all(col in self.df.columns for col in temp_cols):
-                avg_L, avg_M, avg_R = self.df[temp_cols[0]].mean(), self.df[temp_cols[1]].mean(), self.df[temp_cols[2]].mean()
+                # Convert Celsius to Fahrenheit
+                avg_L = (self.df[temp_cols[0]].mean() * 9/5) + 32
+                avg_M = (self.df[temp_cols[1]].mean() * 9/5) + 32
+                avg_R = (self.df[temp_cols[2]].mean() * 9/5) + 32
+                
                 if tire.startswith('L'): inner, outer = avg_R, avg_L
                 else: inner, outer = avg_L, avg_R
+                
                 spread = inner - outer
                 if abs(spread) > max_spread:
-                    if spread > 0: self.recommendations.append(f"{tire} Inner too hot (+{spread:.1f}°C). Reduce neg camber.")
-                    else: self.recommendations.append(f"{tire} Outer too hot ({spread:.1f}°C). Increase neg camber.")
+                    if spread > 0: self.recommendations.append(f"{tire} Inner too hot (+{spread:.1f}°F). Reduce neg camber.")
+                    else: self.recommendations.append(f"{tire} Outer too hot ({spread:.1f}°F). Increase neg camber.")
+                
                 avg_IO = (inner + outer) / 2
                 mid_diff = avg_M - avg_IO
-                if mid_diff > 3.0: self.recommendations.append(f"{tire} Middle too hot (+{mid_diff:.1f}°C). Decrease pressure.")
-                elif mid_diff < -3.0: self.recommendations.append(f"{tire} Middle too cold ({mid_diff:.1f}°C). Increase pressure.")
+                if mid_diff > 5.0: # ~3C -> 5.4F
+                    self.recommendations.append(f"{tire} Middle too hot (+{mid_diff:.1f}°F). Decrease pressure.")
+                elif mid_diff < -5.0:
+                    self.recommendations.append(f"{tire} Middle too cold ({mid_diff:.1f}°F). Increase pressure.")
 
     def _analyze_damper_curb(self):
         rh_channels = ['LFrideHeight', 'RFrideHeight', 'LRrideHeight', 'RRrideHeight']

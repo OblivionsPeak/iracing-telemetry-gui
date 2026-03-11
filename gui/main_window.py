@@ -116,13 +116,13 @@ class MainWindow(QMainWindow):
         self.lbl_lap_time = QLabel("Time: --:--.---")
         self.lbl_delta = QLabel("Delta: --.---s")
         self.lbl_delta.setStyleSheet("font-size: 16px; font-weight: bold;")
-        self.lbl_max_speed = QLabel("Max Speed: --- km/h")
+        self.lbl_max_speed = QLabel("Max Speed: --- MPH")
         self.lbl_max_lat_g = QLabel("Max Lat G: -.-- G")
         
-        self.lbl_tire_lf = QLabel("LF: ---°C")
-        self.lbl_tire_rf = QLabel("RF: ---°C")
-        self.lbl_tire_lr = QLabel("LR: ---°C")
-        self.lbl_tire_rr = QLabel("RR: ---°C")
+        self.lbl_tire_lf = QLabel("LF: ---°F")
+        self.lbl_tire_rf = QLabel("RF: ---°F")
+        self.lbl_tire_lr = QLabel("LR: ---°F")
+        self.lbl_tire_rr = QLabel("RR: ---°F")
         
         summary_grid.addWidget(self.lbl_lap_time, 0, 0)
         summary_grid.addWidget(self.lbl_delta, 0, 1)
@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         self.strategy_group = QGroupBox("Strategy & Fuel")
         strategy_grid = QGridLayout(self.strategy_group)
         
-        self.lbl_fuel_lap = QLabel("Fuel/Lap: -.-- L")
+        self.lbl_fuel_lap = QLabel("Fuel/Lap: -.-- Gal")
         self.lbl_laps_rem = QLabel("Est. Laps Left: --.-")
         
         strategy_grid.addWidget(self.lbl_fuel_lap, 0, 0)
@@ -178,7 +178,7 @@ class MainWindow(QMainWindow):
         self.plot_widget = pg.GraphicsLayoutWidget()
         telemetry_layout.addWidget(self.plot_widget)
         
-        self.p1 = self.plot_widget.addPlot(title="Speed (km/h)")
+        self.p1 = self.plot_widget.addPlot(title="Speed (MPH)")
         self.plot_widget.nextRow()
         self.p2 = self.plot_widget.addPlot(title="Inputs (Throttle / Brake)")
         self.p2.setXLink(self.p1)
@@ -206,7 +206,6 @@ class MainWindow(QMainWindow):
         advanced_tab = QWidget()
         advanced_layout = QVBoxLayout(advanced_tab)
         self.adv_plot_widget = pg.GraphicsLayoutWidget()
-        # Set black background for advanced charts to make heatmap pop
         self.adv_plot_widget.setBackground('k')
         advanced_layout.addWidget(self.adv_plot_widget)
 
@@ -218,7 +217,6 @@ class MainWindow(QMainWindow):
         self.p_track.addItem(self.curr_pos_dot)
         self.curr_pos_dot.hide()
         
-        # Connect mouse click for map-to-graph sync
         self.p_track.scene().sigMouseClicked.connect(self.on_map_clicked)
 
         self.adv_plot_widget.nextRow()
@@ -231,12 +229,10 @@ class MainWindow(QMainWindow):
         self.main_splitter.addWidget(self.right_tabs)
         self.main_splitter.setSizes([200, 350, 850])
 
-        # 2. History Tab
         history_tab = QWidget()
         history_layout = QVBoxLayout(history_tab)
         self.tabs.addTab(history_tab, "History")
         
-        # 3. Current Setup Tab
         setup_tab = QWidget()
         setup_layout = QVBoxLayout(setup_tab)
         self.tabs.addTab(setup_tab, "Current Setup")
@@ -270,68 +266,36 @@ class MainWindow(QMainWindow):
 
     def load_file_from_path(self, file_path):
         if not os.path.exists(file_path):
-            self.lbl_file.setText(f"File not found: {os.path.basename(file_path)}")
-            self.lbl_file.setStyleSheet("color: red;")
             return
-
-        self.lbl_file.setText(f"Loading: {os.path.basename(file_path)}...")
-        self.lbl_file.setStyleSheet("color: blue;")
-        QApplication.processEvents()
-        
         try:
             self.laps, self.session_info = self.parser.load_file(file_path)
-            
             self.laps_list.clear()
-            if not self.laps:
-                self.lbl_file.setText("No laps detected in file.")
-                self.lbl_file.setStyleSheet("color: orange;")
-                return
-
             for lap in self.laps:
                 status = "Flying" if lap.is_flying else "Out/In"
                 time_str = self.format_time(lap.lap_time)
-                item_text = f"Lap {lap.lap_number} - {time_str} ({status})"
-                self.laps_list.addItem(item_text)
+                self.laps_list.addItem(f"Lap {lap.lap_number} - {time_str} ({status})")
             
-            self.lbl_file.setText(f"Loaded: {os.path.basename(file_path)}")
-            self.lbl_file.setStyleSheet("color: green;")
-            
-            # Display Car & Track Name
             weekend_info = self.session_info.get('WeekendInfo', {})
             track_name = weekend_info.get('TrackDisplayName', "Unknown Track")
             car_name = self.session_info.get('DriverInfo', {}).get('DriverCarFullName', "Unknown Car")
-            
             self.lbl_car.setText(f"Vehicle: {car_name}")
             self.lbl_track.setText(f"Track: {track_name}")
             
-            # Populate Current Setup Tab
             car_setup = getattr(self.parser, 'car_setup', {})
             self.update_setup_display(car_setup)
-            
-            # Setup Track Map Outline (using the first available lap with coordinates)
             self.generate_track_outline()
             
-            # Auto-select first flying lap
             for i, lap in enumerate(self.laps):
                 if lap.is_flying:
                     self.laps_list.setCurrentRow(i)
                     break
-            else:
-                self.laps_list.setCurrentRow(0)
+            else: self.laps_list.setCurrentRow(0)
 
-            # Save to history
             self.history_manager.save_session(file_path, self.session_info, self.laps)
             self.refresh_history()
-            
-            # Switch to Analysis tab if we are in History
             self.tabs.setCurrentIndex(0)
-            
         except Exception as e:
-            import traceback
-            error_details = traceback.format_exc()
-            self.lbl_file.setText("Error loading file.")
-            self.lbl_file.setStyleSheet("color: red;")
-            self.txt_recs.setPlainText(f"Failed to parse file:\n{str(e)}\n\n{error_details}")
+            print(f"Error loading file: {e}")
 
     def refresh_history(self):
         sessions = self.history_manager.get_all_sessions()
@@ -346,697 +310,248 @@ class MainWindow(QMainWindow):
     def toggle_live_mode(self, checked):
         if checked:
             self.btn_live.setText("Stop Live Mode")
-            self.btn_live.setStyleSheet("background-color: #e74c3c; color: white;")
             self.load_best_lap_for_delta()
-            self.live_timer.start(16) # ~60Hz
-            self.lbl_file.setText("LIVE MODE ACTIVE")
-            self.lbl_file.setStyleSheet("color: red; font-weight: bold;")
+            self.live_timer.start(16)
         else:
             self.btn_live.setText("Start Live Mode")
-            self.btn_live.setStyleSheet("")
             self.live_timer.stop()
-            self.lbl_delta.setText("Delta: --.---s")
-            self.lbl_delta.setStyleSheet("font-size: 16px; font-weight: bold; color: black;")
-            self.lbl_file.setText("Live Mode Stopped.")
-            self.lbl_file.setStyleSheet("color: gray;")
-
-    def load_best_lap_for_delta(self):
-        """Attempts to find the best lap in history for the current car/track."""
-        data = self.live_monitor.poll_live_data()
-        if data and self.live_monitor.session_info:
-            si = self.live_monitor.session_info
-            driver_info = si.get('DriverInfo', {})
-            driver_idx = driver_info.get('DriverCarIdx', 0)
-            drivers = driver_info.get('Drivers', [])
-            car_name = drivers[driver_idx].get('CarScreenName', "Unknown Car") if drivers else "Unknown Car"
-            track_name = si.get('WeekendInfo', {}).get('TrackDisplayName', "Unknown Track")
-
-            best = self.history_manager.get_best_lap(car_name, track_name)
-            if best:
-                try:
-                    best_parser = TelemetryParser()
-                    best_parser.load_file(best['file_path'])
-                    channels = ['SessionTime', 'LapDistPct', 'Speed', 'Throttle', 'Brake']
-                    self.best_lap_df = best_parser.get_lap_data(best['lap_number'], channels)
-                    self.lbl_car.setText(f"Live: {car_name} (Best: {self.format_time(best['lap_time'])})")
-                except:
-                    self.best_lap_df = None
-            else:
-                self.lbl_car.setText(f"Live: {car_name} (No best lap found)")
 
     def update_live_data(self):
         data = self.live_monitor.poll_live_data()
-        if not data:
-            return
-
-        # Update Summary Dashboard
+        if not data: return
         lap_time = data.get('LapCurrentLapTime', 0)
         self.lbl_lap_time.setText(f"Time: {self.format_time(lap_time)}")
-        self.lbl_max_speed.setText(f"Speed: {data['Speed'] * 3.6:.1f} km/h")
+        # MPH conversion
+        self.lbl_max_speed.setText(f"Speed: {data['Speed'] * 2.23694:.1f} MPH")
         self.lbl_max_lat_g.setText(f"Lat G: {data['LatAccel'] / 9.81:.2f} G")
 
-        # Tire Temps & Heat
         for corner in ['LF', 'RF', 'LR', 'RR']:
-            avg_temp = (data[f'{corner}tempL'] + data[f'{corner}tempM'] + data[f'{corner}tempR']) / 3
+            avg_temp_c = (data[f'{corner}tempL'] + data[f'{corner}tempM'] + data[f'{corner}tempR']) / 3
+            avg_temp_f = (avg_temp_c * 9/5) + 32
             lbl = getattr(self, f"lbl_tire_{corner.lower()}")
-            lbl.setText(f"{corner}: {avg_temp:.1f}°C")
-
-            # Color indicator (heat)
-            if avg_temp < 60: color = "#3498db" # Blue
-            elif avg_temp < 90: color = "#2ecc71" # Green
-            elif avg_temp < 110: color = "#f39c12" # Orange
-            else: color = "#e74c3c" # Red
-            lbl.setStyleSheet(f"background-color: {color}; color: white; font-weight: bold; padding: 2px;")
-
-        # Delta Calculation
-        if self.best_lap_df is not None and not self.best_lap_df.empty:
-            current_dist = data['LapDistPct']
-            best_dist = self.best_lap_df['LapDistPct'].values
-            best_time = self.best_lap_df['SessionTime'].values - self.best_lap_df['SessionTime'].iloc[0]
-
-            # Interpolate best time at current distance
-            interp_best_time = np.interp(current_dist, best_dist, best_time)
-            delta = lap_time - interp_best_time
-
-            color = "#e74c3c" if delta > 0 else "#2ecc71"
-            self.lbl_delta.setText(f"Delta: {delta:+.3f}s")
-            self.lbl_delta.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {color};")
-
-        # Update Graphs in Real-time (at lower frequency to save CPU)
-        if len(self.live_monitor.lap_buffer) % 30 == 0:
-            df = self.live_monitor.get_current_lap_df()
-            if not df.empty:
-                self.update_live_graphs(df, data)
-
-    def update_live_graphs(self, df, current_data):
-        self.p1.clear()
-        self.p2.clear()
-
-        # Plot Best Lap as reference
-        if self.best_lap_df is not None:
-            bx = self.best_lap_df['SessionTime'].values - self.best_lap_df['SessionTime'].iloc[0]
-            self.p1.plot(bx, self.best_lap_df['Speed'].values * 3.6, pen=pg.mkPen('gray', width=1, style=Qt.PenStyle.DashLine))
-
-        # Plot Current Lap
-        cx = df['SessionTime'].values - df['SessionTime'].iloc[0]
-        self.p1.plot(cx, df['Speed'].values * 3.6, pen=pg.mkPen('b', width=1.5))
-        self.p2.plot(cx, df['Throttle'].values, pen=pg.mkPen('g', width=1))
-        self.p2.plot(cx, df['Brake'].values, pen=pg.mkPen('r', width=1))
-
-        # Track Map current position
-        if 'CarIdxX' in current_data and 'CarIdxY' in current_data:
-            self.curr_pos_dot.setData(x=[current_data['CarIdxX']], y=[current_data['CarIdxY']])
-            self.p_track.addItem(self.curr_pos_dot)
-            self.curr_pos_dot.show()
-
-    def export_csv(self):
-
-        if self.primary_df is None:
-            return
-            
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Lap CSV", f"lap_{self.primary_lap.lap_number}.csv", "CSV Files (*.csv)"
-        )
-        if file_path:
-            self.primary_df.to_csv(file_path, index=False)
-            self.lbl_file.setText(f"Exported: {os.path.basename(file_path)}")
-            self.lbl_file.setStyleSheet("color: green;")
-
-    def generate_engineering_report(self):
-        if self.primary_df is None or self.primary_lap is None:
-            return
-
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Engineering Report", f"report_lap_{self.primary_lap.lap_number}.html", "HTML Files (*.html)"
-        )
-        if not file_path:
-            return
-
-        # 1. Gather Data
-        weekend_info = self.session_info.get('WeekendInfo', {})
-        driver_info = self.session_info.get('DriverInfo', {})
-        
-        track_name = weekend_info.get('TrackDisplayName', "Unknown Track")
-        car_name = driver_info.get('DriverCarFullName', "Unknown Car")
-        date_str = weekend_info.get('WeekendOptions', {}).get('Date', "N/A")
-        
-        lap_time = self.format_time(self.primary_lap.lap_time)
-        sectors = self.primary_lap.sectors
-        
-        recs_dict = self.analyzer.run_analysis(self.primary_df)
-        setup_recs = recs_dict.get('setup', [])
-        coaching_recs = recs_dict.get('coaching', [])
-        strategy = recs_dict.get('strategy', {})
-        
-        fuel_lap = strategy.get('FuelPerLap', 0)
-        est_laps = strategy.get('EstimatedLapsRemaining', 0)
-        gear_advice = strategy.get('GearAdvice', [])
-
-        # 2. Capture Track Map
-        import pyqtgraph.exporters
-        import base64
-        
-        exporter = pg.exporters.ImageExporter(self.p_track.vb)
-        exporter.parameters()['width'] = 800
-        
-        temp_img = "temp_track_map.png"
-        img_base64 = ""
-        try:
-            exporter.export(temp_img)
-            with open(temp_img, "rb") as f:
-                img_base64 = base64.b64encode(f.read()).decode('utf-8')
-            os.remove(temp_img)
-        except Exception as e:
-            print(f"Failed to export track map: {e}")
-
-        # 3. Build HTML
-        html = f"""
-        <html>
-        <head>
-            <title>iRacing Engineering Report - Lap {self.primary_lap.lap_number}</title>
-            <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 40px; color: #333; background-color: #f4f7f6; }}
-                .container {{ max-width: 1000px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }}
-                h1 {{ color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; margin-top: 0; }}
-                h2 {{ color: #2980b9; margin-top: 30px; border-left: 5px solid #3498db; padding-left: 10px; }}
-                .metadata {{ background: #ecf0f1; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
-                .metadata p {{ margin: 5px 0; font-size: 1.1em; }}
-                .section {{ margin-bottom: 40px; }}
-                .recommendations, .coaching, .strategy {{ padding: 15px; border-radius: 8px; border-left: 5px solid; margin-top: 10px; }}
-                .recommendations {{ background: #ebf5fb; border-left-color: #3498db; }}
-                .coaching {{ background: #eafaf1; border-left-color: #27ae60; }}
-                .strategy {{ background: #fef5e7; border-left-color: #f39c12; }}
-                ul {{ margin: 0; padding-left: 20px; }}
-                li {{ margin-bottom: 8px; }}
-                table {{ border-collapse: collapse; width: 100%; margin-top: 10px; background: white; }}
-                th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
-                th {{ background-color: #3498db; color: white; }}
-                tr:nth-child(even) {{ background-color: #f9f9f9; }}
-                .track-map {{ text-align: center; margin-top: 20px; background: #fff; padding: 10px; border: 1px solid #ddd; border-radius: 8px; }}
-                .track-map img {{ max-width: 100%; height: auto; }}
-                .footer {{ text-align: center; margin-top: 50px; color: #7f8c8d; font-size: 0.9em; }}
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>iRacing Engineering Report</h1>
-                
-                <div class="metadata">
-                    <div>
-                        <p><b>Date:</b> {date_str}</p>
-                        <p><b>Car:</b> {car_name}</p>
-                        <p><b>Track:</b> {track_name}</p>
-                    </div>
-                    <div>
-                        <p><b>Lap Number:</b> {self.primary_lap.lap_number}</p>
-                        <p><b>Lap Time:</b> <span style="font-weight: bold; color: #e74c3c;">{lap_time}</span></p>
-                    </div>
-                </div>
-
-                <div class="section">
-                    <h2>Sector Times</h2>
-                    <table>
-                        <tr><th>Sector</th><th>Time</th></tr>
-                        {"".join([f"<tr><td>Sector {i+1}</td><td>{s:.3f}s</td></tr>" for i, s in enumerate(sectors)])}
-                    </table>
-                </div>
-
-                <div class="section">
-                    <h2>Track Map (Speed Heatmap)</h2>
-                    <div class="track-map">
-                        {f'<img src="data:image/png;base64,{img_base64}" />' if img_base64 else '<p>No track map available.</p>'}
-                    </div>
-                </div>
-
-                <div class="section">
-                    <h2>🔧 Setup Recommendations</h2>
-                    <div class="recommendations">
-                        <ul>
-                            {"".join([f"<li>{r}</li>" for r in setup_recs]) if setup_recs else "<li>No setup issues detected.</li>"}
-                        </ul>
-                    </div>
-                </div>
-
-                <div class="section">
-                    <h2>🏁 Driver Coaching</h2>
-                    <div class="coaching">
-                        <ul>
-                            {"".join([f"<li>{r}</li>" for r in coaching_recs]) if coaching_recs else "<li>No coaching tips for this lap.</li>"}
-                        </ul>
-                    </div>
-                </div>
-
-                <div class="section">
-                    <h2>⛽ Strategy & Fuel</h2>
-                    <div class="strategy">
-                        <p><b>Avg Fuel per Lap:</b> {fuel_lap:.3f} L</p>
-                        <p><b>Estimated Laps Remaining:</b> {est_laps:.1f}</p>
-                        <h3 style="margin-top: 15px; font-size: 1.1em; color: #d68910;">Gear Advice:</h3>
-                        <ul>
-                            {"".join([f"<li>{a}</li>" for a in gear_advice]) if gear_advice else "<li>Gear selection looks optimal.</li>"}
-                        </ul>
-                    </div>
-                </div>
-                
-                <div class="footer">
-                    Generated by iRacing Telemetry Setup Analyzer
-                </div>
-            </div>
-        </body>
-        </html>
-        """
-
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(html)
-            self.lbl_file.setText(f"Report generated: {os.path.basename(file_path)}")
-            self.lbl_file.setStyleSheet("color: green;")
-        except Exception as e:
-            self.lbl_file.setText(f"Failed to save report: {str(e)}")
-            self.lbl_file.setStyleSheet("color: red;")
-
-    def import_external_setup(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Import iRacing Setup (HTML Export)", "", "HTML Files (*.html);;All Files (*)"
-        )
-        if not file_path:
-            return
-
-        try:
-            from bs4 import BeautifulSoup
-            with open(file_path, 'r', encoding='utf-8') as f:
-                soup = BeautifulSoup(f, 'html.parser')
-            
-            external_setup = {}
-            # iRacing HTML exports often have multiple tables
-            tables = soup.find_all('table')
-            for table in tables:
-                rows = table.find_all('tr')
-                for row in rows:
-                    cols = row.find_all('td')
-                    if len(cols) == 2:
-                        key = cols[0].text.strip().replace(':', '')
-                        value = cols[1].text.strip()
-                        # We don't have nested category info here easily, 
-                        # so we'll store in a flat dict for context
-                        external_setup[key] = value
-            
-            if external_setup:
-                # Merge into existing session_info car_setup for the analyzer
-                if self.session_info:
-                    # We store it in a special key to avoid overwriting nested structure
-                    self.session_info['ExternalSetup'] = external_setup
-                    
-                self.lbl_file.setText(f"Imported Setup: {os.path.basename(file_path)}")
-                self.lbl_file.setStyleSheet("color: purple;")
-                
-                # Update UI Table
-                self.update_setup_display(external_setup)
-                
-                # Re-run analysis if a lap is selected
-                if self.primary_df is not None:
-                    self.generate_recommendations(self.primary_df)
-                    
-        except Exception as e:
-            self.txt_recs.setPlainText(f"Failed to import external setup: {str(e)}")
-
-    def update_setup_display(self, setup_dict):
-        """Populates the Setup Tree table with key-value pairs."""
-        self.setup_tree.setRowCount(0)
-        
-        # Flatten nested iRacing setup if needed
-        rows = []
-        def flatten(d, prefix=''):
-            for k, v in d.items():
-                if isinstance(v, dict):
-                    flatten(v, prefix + k + ' > ')
-                else:
-                    rows.append((prefix + k, str(v)))
-        
-        flatten(setup_dict)
-        
-        self.setup_tree.setRowCount(len(rows))
-        for i, (key, val) in enumerate(rows):
-            self.setup_tree.setItem(i, 0, QTableWidgetItem(key))
-            self.setup_tree.setItem(i, 1, QTableWidgetItem(val))
-
-    def generate_track_outline(self):
-        """Creates a static high-contrast outline of the track using the longest lap coordinates."""
-        if not self.laps: return
-        
-        # Clear existing outline
-        self.p_track.clear()
-        self.p_track.addItem(self.curr_pos_dot)
-        
-        # Find the lap with most samples (likely a full lap)
-        best_lap = max(self.laps, key=lambda l: l.end_index - l.start_index)
-        
-        # Load coordinates for this lap
-        df = self.parser.get_lap_data(best_lap.lap_number, ['CarIdxX', 'CarIdxY'])
-        if not df.empty:
-            player_idx = self.session_info.get('DriverInfo', {}).get('DriverCarIdx', 0) if self.session_info else 0
-            
-            # Extract player coordinates robustly
-            def extract_coord(val):
-                if isinstance(val, (list, tuple, np.ndarray)):
-                    return val[player_idx] if len(val) > player_idx else 0
-                return val
-
-            tx = df['CarIdxX'].apply(extract_coord).values
-            ty = df['CarIdxY'].apply(extract_coord).values
-            
-            mask = (tx != 0) | (ty != 0)
-            if mask.any():
-                # Use high-contrast Neon Green for the track outline
-                self.p_track.plot(tx[mask], ty[mask], pen=pg.mkPen('#00ff00', width=2), name="Track Outline")
-                self.p_track.autoRange()
-
-    def on_history_double_clicked(self, index):
-        row = index.row()
-        file_path = self.history_table.item(row, 4).text()
-        self.load_file_from_path(file_path)
-
-    def format_time(self, seconds):
-        if seconds <= 0: return "--:--.---"
-        mins = int(seconds // 60)
-        secs = seconds % 60
-        return f"{mins}:{secs:06.3f}"
-
-    def on_lap_selected(self):
-        selected_items = self.laps_list.selectedItems()
-        if not selected_items:
-            self.btn_export.setEnabled(False)
-            return
-
-        selected_indices = [self.laps_list.row(item) for item in selected_items]
-        
-        # Sort indices to maintain Lap A vs Lap B consistency
-        selected_indices.sort()
-        
-        # Only support up to 2 laps for now
-        indices_to_load = selected_indices[:2]
-        
-        lap_data_list = []
-        channels = [
-            'SessionTime', 'LapDistPct', 'Speed', 'Throttle', 'Brake', 'LatAccel',
-            'LFtempL', 'LFtempM', 'LFtempR',
-            'RFtempL', 'RFtempM', 'RFtempR',
-            'LRtempL', 'LRtempM', 'LRtempR',
-            'RRtempL', 'RRtempM', 'RRtempR',
-            'FuelLevel', 'RPM', 'Gear'
-        ]
-        
-        # Add extra channels for analysis and advanced charts
-        analysis_channels = [
-            'LFspeed', 'RFspeed', 'LRspeed', 'RRspeed',
-            'LFrideHeight', 'RFrideHeight', 'LRrideHeight', 'RRrideHeight',
-            'SteeringWheelAngle', 'YawRate', 'CarIdxX', 'CarIdxY'
-        ]
-        channels.extend([c for c in analysis_channels if c not in channels])
-
-        player_idx = self.session_info.get('DriverInfo', {}).get('DriverCarIdx', 0) if self.session_info else 0
-
-        for idx in indices_to_load:
-            lap = self.laps[idx]
-            df = self.parser.get_lap_data(lap.lap_number, channels)
-            
-            if not df.empty:
-                # Process array channels (like CarIdxX) to extract player-only data
-                # iRacing CarIdxX/Y are often arrays of all cars in session
-                for col in ['CarIdxX', 'CarIdxY']:
-                    if col in df.columns:
-                        sample = df[col].iloc[0]
-                        if isinstance(sample, (list, tuple, np.ndarray)):
-                             df[col] = df[col].apply(lambda x: x[player_idx] if len(x) > player_idx else 0)
-                
-                # Check if coordinates are actually present (non-zero)
-                coords_present = False
-                if 'CarIdxX' in df.columns:
-                    coords_present = (df['CarIdxX'] != 0).any()
-                
-                if not coords_present:
-                    self.lbl_file.setText(f"Loaded: Lap {lap.lap_number} (Warning: No GPS data in file)")
-                    self.lbl_file.setStyleSheet("color: orange;")
-                
-                lap_data_list.append((lap, df))
-
-        if not lap_data_list:
-            self.btn_export.setEnabled(False)
-            return
-
-        # Update Summary Dashboard (use first selected lap)
-        self.primary_lap, self.primary_df = lap_data_list[0]
-        self.btn_export.setEnabled(True)
-        self.btn_report.setEnabled(True)
-        
-        self.update_summary(self.primary_lap, self.primary_df)
-        
-        # Update Recommendations
-        self.generate_recommendations(self.primary_df)
-        
-        # Update Graphs
-        self.update_graphs(lap_data_list)
+            lbl.setText(f"{corner}: {avg_temp_f:.1f}°F")
+            color = "#3498db" if avg_temp_f < 140 else "#2ecc71" if avg_temp_f < 194 else "#f39c12" if avg_temp_f < 230 else "#e74c3c"
+            lbl.setStyleSheet(f"background-color: {color}; color: white;")
 
     def update_summary(self, lap, df):
         self.lbl_lap_time.setText(f"Time: {self.format_time(lap.lap_time)}")
-        
         if 'Speed' in df.columns:
-            max_speed = df['Speed'].max() * 3.6 # m/s to km/h
-            self.lbl_max_speed.setText(f"Max Speed: {max_speed:.1f} km/h")
-        
+            max_speed_mph = df['Speed'].max() * 2.23694
+            self.lbl_max_speed.setText(f"Max Speed: {max_speed_mph:.1f} MPH")
         if 'LatAccel' in df.columns:
             max_lat_g = df['LatAccel'].abs().max() / 9.81
             self.lbl_max_lat_g.setText(f"Max Lat G: {max_lat_g:.2f} G")
-            
-        # Tire Temps
         for corner in ['LF', 'RF', 'LR', 'RR']:
             cols = [f'{corner}tempL', f'{corner}tempM', f'{corner}tempR']
             if all(c in df.columns for c in cols):
-                avg_temp = df[cols].mean().mean()
-                getattr(self, f"lbl_tire_{corner.lower()}").setText(f"{corner}: {avg_temp:.1f}°C")
-
-        # Update Sectors
+                avg_temp_c = df[cols].mean().mean()
+                avg_temp_f = (avg_temp_c * 9/5) + 32
+                getattr(self, f"lbl_tire_{corner.lower()}").setText(f"{corner}: {avg_temp_f:.1f}°F")
         self.sector_table.setRowCount(len(lap.sectors))
         for i, sector_time in enumerate(lap.sectors):
             self.sector_table.setItem(i, 0, QTableWidgetItem(f"Sector {i+1}"))
             self.sector_table.setItem(i, 1, QTableWidgetItem(f"{sector_time:.3f}s"))
 
-    def generate_track_outline(self):
-        """Creates a static high-contrast outline of the track using the longest lap coordinates."""
-        if not self.laps: return
-        
-        # Clear existing items but keep the scrub dot
-        self.p_track.clear()
-        self.p_track.addItem(self.curr_pos_dot)
-        
-        # Find the lap with most samples (likely a full lap)
-        best_lap = max(self.laps, key=lambda l: l.end_index - l.start_index)
-        
-        # Load coordinates for this lap
-        df = self.parser.get_lap_data(best_lap.lap_number, ['CarIdxX', 'CarIdxY'])
-        if not df.empty:
-            player_idx = self.session_info.get('DriverInfo', {}).get('DriverCarIdx', 0) if self.session_info else 0
-            
-            # Extract player coordinates robustly
-            def extract_coord(val):
-                if isinstance(val, (list, tuple, np.ndarray)):
-                    return val[player_idx] if len(val) > player_idx else 0
-                return val
-
-            tx = df['CarIdxX'].apply(extract_coord).values
-            ty = df['CarIdxY'].apply(extract_coord).values
-            
-            mask = (tx != 0) | (ty != 0)
-            if mask.any():
-                # Use White for the track outline against the black background
-                self.p_track.plot(tx[mask], ty[mask], pen=pg.mkPen('#ffffff', width=1, style=Qt.PenStyle.SolidLine), name="Track Outline")
-                self.p_track.autoRange()
-
     def update_graphs(self, lap_data_list):
         self.p1.clear()
         self.p2.clear()
         self.p3.clear()
-        
-        # Re-add persistent items to telemetry plots
         self.p1.addItem(self.v_line1, ignoreBounds=True)
         self.p2.addItem(self.v_line2, ignoreBounds=True)
         self.p3.addItem(self.v_line3, ignoreBounds=True)
-        
-        # We don't clear p_track here to keep the outline, we just add/remove the active lap items
-        # To do this cleanly, we clear p_track but then RE-GENERATE the outline
         self.p_track.clear()
         self.p_track.addItem(self.curr_pos_dot)
-        self.generate_track_outline() # Re-add ghost outline
-        
+        self.generate_track_outline()
         self.p_aero.clear()
         
-        # Hide scrub lines initially on new data
-        self.v_line1.hide()
-        self.v_line2.hide()
-        self.v_line3.hide()
-        self.curr_pos_dot.hide()
-        
-        colors = ['#00d2ff', '#ff0055'] # Bright Cyan and Bright Magenta
-        
+        colors = ['#00d2ff', '#ff0055']
         for i, (lap, df) in enumerate(lap_data_list):
             if i >= 2: break
-            
             color = colors[i]
-            # Use Time into Lap as X axis
-            if 'SessionTime' in df.columns:
-                x = df['SessionTime'].values - df['SessionTime'].iloc[0]
-            else:
-                x = np.arange(len(df))
-            
+            x = df['SessionTime'].values - df['SessionTime'].iloc[0] if 'SessionTime' in df.columns else np.arange(len(df))
             if 'Speed' in df.columns:
-                self.p1.plot(x, df['Speed'].values * 3.6, pen=pg.mkPen(color, width=2), name=f"Lap {lap.lap_number}")
-                
+                self.p1.plot(x, df['Speed'].values * 2.23694, pen=pg.mkPen(color, width=2), name=f"Lap {lap.lap_number}")
             if 'Throttle' in df.columns:
-                self.p2.plot(x, df['Throttle'].values, pen=pg.mkPen(color, style=Qt.PenStyle.SolidLine), name=f"T Lap {lap.lap_number}")
+                self.p2.plot(x, df['Throttle'].values, pen=pg.mkPen(color, style=Qt.PenStyle.SolidLine))
             if 'Brake' in df.columns:
-                self.p2.plot(x, df['Brake'].values, pen=pg.mkPen(color, style=Qt.PenStyle.DashLine), name=f"B Lap {lap.lap_number}")
+                self.p2.plot(x, df['Brake'].values, pen=pg.mkPen(color, style=Qt.PenStyle.DashLine))
 
-        # Plot Delta if 2 laps are selected
         if len(lap_data_list) == 2:
-            lap_a, df_a = lap_data_list[0]
-            lap_b, df_b = lap_data_list[1]
-            
-            x_delta, delta_values = calculate_delta(df_a, df_b)
+            x_delta, delta_values = calculate_delta(lap_data_list[0][1], lap_data_list[1][1])
             if x_delta is not None:
-                self.p3.plot(x_delta, delta_values, pen=pg.mkPen('#2c3e50', width=1.5), name="Delta (A-B)")
+                self.p3.plot(x_delta, delta_values, pen=pg.mkPen('#2c3e50', width=1.5))
                 self.p3.addLine(y=0, pen=pg.mkPen('gray', style=Qt.PenStyle.DashLine))
 
-        # Advanced Charts
         if lap_data_list:
             player_idx = self.session_info.get('DriverInfo', {}).get('DriverCarIdx', 0) if self.session_info else 0
-            
             def extract_coord(val):
-                if isinstance(val, (list, tuple, np.ndarray)):
-                    return val[player_idx] if len(val) > player_idx else 0
+                if isinstance(val, (list, tuple, np.ndarray)): return val[player_idx] if len(val) > player_idx else 0
                 return val
-
-            # 1. Track Map
             if len(lap_data_list) == 1:
-                # Single Lap: Speed Heatmap
                 lap, df = lap_data_list[0]
                 if 'CarIdxX' in df.columns and 'CarIdxY' in df.columns:
                     tx = df['CarIdxX'].apply(extract_coord).values
                     ty = df['CarIdxY'].apply(extract_coord).values
-                    speed = df['Speed'].values * 3.6
+                    speed = df['Speed'].values * 2.23694
                     mask = (tx != 0) | (ty != 0)
                     if mask.any():
                         tx, ty, speed = tx[mask], ty[mask], speed[mask]
-                        # Use high-contrast heatmap colors
                         norm_speed = (speed - speed.min()) / (speed.max() - speed.min() + 1e-6)
-                        try:
-                            # 'inferno' or 'viridis' are good high-contrast maps
-                            cmap = pg.colormap.get('plasma')
-                            brushes = cmap.map(norm_speed, mode='byte')
-                        except:
-                            brushes = [pg.mkBrush('y') for _ in range(len(tx))]
-                        
-                        scatter = pg.ScatterPlotItem(x=tx, y=ty, brush=brushes, size=4, pen=None)
-                        self.p_track.addItem(scatter)
+                        brushes = pg.colormap.get('plasma').map(norm_speed, mode='byte')
+                        self.p_track.addItem(pg.ScatterPlotItem(x=tx, y=ty, brush=brushes, size=4, pen=None))
             else:
-                # Comparison: Racing Line Comparison (Cyan vs Magenta)
                 for i, (lap, df) in enumerate(lap_data_list[:2]):
                     if 'CarIdxX' in df.columns and 'CarIdxY' in df.columns:
-                        tx = df['CarIdxX'].apply(extract_coord).values
-                        ty = df['CarIdxY'].apply(extract_coord).values
+                        tx, ty = df['CarIdxX'].apply(extract_coord).values, df['CarIdxY'].apply(extract_coord).values
                         mask = (tx != 0) | (ty != 0)
-                        if mask.any():
-                            self.p_track.plot(tx[mask], ty[mask], pen=pg.mkPen(colors[i], width=3), name=f"Lap {lap.lap_number}")
+                        if mask.any(): self.p_track.plot(tx[mask], ty[mask], pen=pg.mkPen(colors[i], width=3))
 
-            # 2. Aero Map (Primary Lap)
             lap, df = lap_data_list[0]
-            rrh_cols = ['LRrideHeight', 'RRrideHeight']
-            frh_cols = ['LFrideHeight', 'RFrideHeight']
-            if all(c in df.columns for c in rrh_cols + frh_cols):
-                frh = (df['LFrideHeight'] + df['RFrideHeight']) / 2 * 1000 # mm
-                rrh = (df['LRrideHeight'] + df['RRrideHeight']) / 2 * 1000 # mm
-                self.p_aero.plot(frh.values, rrh.values, pen=None, symbol='o', symbolSize=4, symbolBrush='#3498db', name="Aero Platform")
-                self.p_aero.setLabel('bottom', "Front Ride Height", units='mm')
-                self.p_aero.setLabel('left', "Rear Ride Height", units='mm')
+            if all(c in df.columns for c in ['LFrideHeight', 'RFrideHeight', 'LRrideHeight', 'RRrideHeight']):
+                frh = (df['LFrideHeight'] + df['RFrideHeight']) / 2 * 39.37 # inches
+                rrh = (df['LRrideHeight'] + df['RRrideHeight']) / 2 * 39.37 # inches
+                self.p_aero.plot(frh.values, rrh.values, pen=None, symbol='o', symbolSize=4, symbolBrush='#3498db')
+                self.p_aero.setLabel('bottom', "Front Ride Height", units='in')
+                self.p_aero.setLabel('left', "Rear Ride Height", units='in')
+
+    def generate_engineering_report(self):
+        if self.primary_df is None: return
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Report", f"report_lap_{self.primary_lap.lap_number}.html", "HTML (*.html)")
+        if not file_path: return
+        si = self.session_info
+        recs = self.analyzer.run_analysis(self.primary_df)
+        strategy = recs.get('strategy', {})
+        
+        import pyqtgraph.exporters
+        import base64
+        exporter = pg.exporters.ImageExporter(self.p_track.vb)
+        exporter.parameters()['width'] = 800
+        img_base64 = ""
+        try:
+            exporter.export("temp.png")
+            with open("temp.png", "rb") as f: img_base64 = base64.b64encode(f.read()).decode('utf-8')
+            os.remove("temp.png")
+        except: pass
+
+        html = f"""
+        <html><head><style>body {{ font-family: sans-serif; margin: 40px; }} .box {{ padding: 15px; border-radius: 8px; margin-top: 10px; }}</style></head>
+        <body><h1>Engineering Report</h1>
+        <p><b>Car:</b> {si.get('DriverInfo', {}).get('DriverCarFullName')}</p>
+        <p><b>Track:</b> {si.get('WeekendInfo', {}).get('TrackDisplayName')}</p>
+        <p><b>Lap:</b> {self.primary_lap.lap_number} ({self.format_time(self.primary_lap.lap_time)})</p>
+        <h2>Track Map</h2><img src="data:image/png;base64,{img_base64}" />
+        <h2>Setup Advice</h2><div class="box" style="background:#ebf5fb"><ul>{''.join([f'<li>{r}</li>' for r in recs['setup']])}</ul></div>
+        <h2>Fuel/Strategy</h2><div class="box" style="background:#fef5e7">
+        <p>Fuel/Lap: {strategy.get('FuelPerLap', 0):.3f} Gal</p>
+        <p>Est. Laps: {strategy.get('EstimatedLapsRemaining', 0):.1f}</p></div>
+        </body></html>
+        """
+        with open(file_path, "w", encoding="utf-8") as f: f.write(html)
+
+    def import_external_setup(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Import Setup", "", "HTML (*.html)")
+        if not file_path: return
+        from bs4 import BeautifulSoup
+        with open(file_path, 'r', encoding='utf-8') as f: soup = BeautifulSoup(f, 'html.parser')
+        external_setup = {}
+        for row in soup.find_all('tr'):
+            cols = row.find_all('td')
+            if len(cols) == 2: external_setup[cols[0].text.strip().replace(':', '')] = cols[1].text.strip()
+        if external_setup:
+            if self.session_info: self.session_info['ExternalSetup'] = external_setup
+            self.update_setup_display(external_setup)
+            if self.primary_df is not None: self.generate_recommendations(self.primary_df)
+
+    def update_setup_display(self, setup_dict):
+        self.setup_tree.setRowCount(0)
+        rows = []
+        def flatten(d, p=''):
+            for k, v in d.items():
+                if isinstance(v, dict): flatten(v, p + k + ' > ')
+                else: rows.append((p + k, str(v)))
+        flatten(setup_dict)
+        self.setup_tree.setRowCount(len(rows))
+        for i, (k, v) in enumerate(rows):
+            self.setup_tree.setItem(i, 0, QTableWidgetItem(k))
+            self.setup_tree.setItem(i, 1, QTableWidgetItem(v))
+
+    def generate_track_outline(self):
+        if not self.laps: return
+        self.p_track.clear()
+        self.p_track.addItem(self.curr_pos_dot)
+        best_lap = max(self.laps, key=lambda l: l.end_index - l.start_index)
+        df = self.parser.get_lap_data(best_lap.lap_number, ['CarIdxX', 'CarIdxY'])
+        if not df.empty:
+            p_idx = self.session_info.get('DriverInfo', {}).get('DriverCarIdx', 0)
+            def ex(v): return v[p_idx] if isinstance(v, (list, tuple, np.ndarray)) else v
+            tx, ty = df['CarIdxX'].apply(ex).values, df['CarIdxY'].apply(ex).values
+            mask = (tx != 0) | (ty != 0)
+            if mask.any():
+                self.p_track.plot(tx[mask], ty[mask], pen=pg.mkPen('#ffffff', width=1))
+                self.p_track.autoRange()
+
+    def on_history_double_clicked(self, index):
+        self.load_file_from_path(self.history_table.item(index.row(), 4).text())
+
+    def format_time(self, s):
+        if s <= 0: return "--:--.---"
+        return f"{int(s//60)}:{s%60:06.3f}"
+
+    def on_lap_selected(self):
+        sel = sorted([self.laps_list.row(i) for i in self.laps_list.selectedItems()])[:2]
+        if not sel: return
+        ldl = []
+        p_idx = self.session_info.get('DriverInfo', {}).get('DriverCarIdx', 0)
+        for idx in sel:
+            lap = self.laps[idx]
+            df = self.parser.get_lap_data(lap.lap_number, ['SessionTime', 'LapDistPct', 'Speed', 'Throttle', 'Brake', 'LatAccel', 'LFtempL', 'LFtempM', 'LFtempR', 'RFtempL', 'RFtempM', 'RFtempR', 'LRtempL', 'LRtempM', 'LRtempR', 'RRtempL', 'RRtempM', 'RRtempR', 'FuelLevel', 'RPM', 'Gear', 'LFrideHeight', 'RFrideHeight', 'LRrideHeight', 'RRrideHeight', 'SteeringWheelAngle', 'YawRate', 'CarIdxX', 'CarIdxY'])
+            if not df.empty:
+                for c in ['CarIdxX', 'CarIdxY']:
+                    if c in df.columns: df[c] = df[c].apply(lambda x: x[p_idx] if isinstance(x, (list, tuple, np.ndarray)) else x)
+                ldl.append((lap, df))
+        if ldl:
+            self.primary_lap, self.primary_df = ldl[0]
+            self.btn_export.setEnabled(True)
+            self.btn_report.setEnabled(True)
+            self.update_summary(self.primary_lap, self.primary_df)
+            self.generate_recommendations(self.primary_df)
+            self.update_graphs(ldl)
 
     def on_map_clicked(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # Check if click is on p_track
             items = self.p_track.scene().items(event.scenePos())
-            if self.p_track.vb in [item for item in items if isinstance(item, pg.ViewBox)]:
-                pos = event.scenePos()
-                mouse_point = self.p_track.vb.mapSceneToView(pos)
+            if self.p_track.vb in [i for i in items if isinstance(i, pg.ViewBox)]:
+                mouse_point = self.p_track.vb.mapSceneToView(event.scenePos())
                 self.sync_to_coordinate(mouse_point.x(), mouse_point.y())
 
-    def sync_to_coordinate(self, x_click, y_click):
+    def sync_to_coordinate(self, xc, yc):
         if self.primary_df is not None and 'CarIdxX' in self.primary_df.columns:
             df = self.primary_df
-            # Filter out zeros for distance calculation
-            valid_mask = (df['CarIdxX'] != 0) | (df['CarIdxY'] != 0)
-            if not valid_mask.any():
-                return
-            
-            valid_df = df[valid_mask]
-            
-            # Find closest point using numpy
-            tx = valid_df['CarIdxX'].values
-            ty = valid_df['CarIdxY'].values
-            dists = (tx - x_click)**2 + (ty - y_click)**2
-            idx = np.argmin(dists)
-            
-            row = valid_df.iloc[idx]
-            # Calculate time offset from lap start
+            mask = (df['CarIdxX'] != 0) | (df['CarIdxY'] != 0)
+            if not mask.any(): return
+            vdf = df[mask]
+            dists = (vdf['CarIdxX'] - xc)**2 + (vdf['CarIdxY'] - yc)**2
+            row = vdf.iloc[np.argmin(dists)]
             x_val = row['SessionTime'] - df['SessionTime'].iloc[0]
-            
-            # Update scrub bars
-            self.v_line1.setPos(x_val)
-            self.v_line2.setPos(x_val)
-            self.v_line3.setPos(x_val)
-            
-            self.v_line1.show()
-            self.v_line2.show()
-            self.v_line3.show()
-            
-            # Update current position dot
-            self.curr_pos_dot.setData(x=[row['CarIdxX']], y=[row['CarIdxY']])
-            self.curr_pos_dot.show()
+            self.v_line1.setPos(x_val); self.v_line2.setPos(x_val); self.v_line3.setPos(x_val)
+            self.v_line1.show(); self.v_line2.show(); self.v_line3.show()
+            self.curr_pos_dot.setData(x=[row['CarIdxX']], y=[row['CarIdxY']]); self.curr_pos_dot.show()
 
     def generate_recommendations(self, df):
         self.analyzer = SetupAnalyzer(df, self.session_info)
-        recs_dict = self.analyzer.run_analysis()
-        
-        setup_recs = recs_dict.get('setup', [])
-        coaching_recs = recs_dict.get('coaching', [])
-        strategy = recs_dict.get('strategy', {})
-
+        recs = self.analyzer.run_analysis()
         self.txt_recs.clear()
-        
-        # Update Strategy Labels
-        fuel_per_lap = strategy.get('FuelPerLap', 0)
-        est_laps = strategy.get('EstimatedLapsRemaining', 0)
-        self.lbl_fuel_lap.setText(f"Fuel/Lap: {fuel_per_lap:.2f} L")
-        self.lbl_laps_rem.setText(f"Est. Laps Left: {est_laps:.1f}")
+        self.lbl_fuel_lap.setText(f"Fuel/Lap: {recs['strategy'].get('FuelPerLap', 0):.2f} Gal")
+        self.lbl_laps_rem.setText(f"Est. Laps Left: {recs['strategy'].get('EstimatedLapsRemaining', 0):.1f}")
+        self.txt_recs.append("<b>🔧 Setup Advice</b>")
+        for i, r in enumerate(recs['setup'], 1): self.txt_recs.append(f"{i}. {r}")
+        self.txt_recs.append("<br><b>🏁 Coaching</b>")
+        for i, r in enumerate(recs['coaching'], 1): self.txt_recs.append(f"{i}. {r}")
 
-        # Display Setup Recommendations
-        self.txt_recs.append("<b style='color: #2c3e50; font-size: 14px;'>🔧 Car Setup Recommendations</b>")
-        if not setup_recs:
-            self.txt_recs.append("<i>No setup issues detected.</i>")
-        else:
-            for i, rec in enumerate(setup_recs, 1):
-                self.txt_recs.append(f"<b>{i}.</b> {rec}")
-
-        self.txt_recs.append("<br><b style='color: #2c3e50; font-size: 14px;'>🏁 Driver Coaching Tips</b>")
-        if not coaching_recs:
-            self.txt_recs.append("<i>No coaching tips found for this lap. Keep it up!</i>")
-        else:
-            for i, rec in enumerate(coaching_recs, 1):
-                self.txt_recs.append(f"<b>{i}.</b> {rec}")
-
-        # Add Gear Optimization Advice
-        gear_advice = strategy.get('GearAdvice', [])
-        if gear_advice:
-            self.txt_recs.append("<br><b style='color: #2c3e50; font-size: 14px;'>⚙️ Gear Optimization</b>")
-            for advice in gear_advice:
-                self.txt_recs.append(f"• {advice}")
+    def export_csv(self):
+        if self.primary_df is None: return
+        p, _ = QFileDialog.getSaveFileName(self, "Export", f"lap_{self.primary_lap.lap_number}.csv", "CSV (*.csv)")
+        if p: self.primary_df.to_csv(p, index=False)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

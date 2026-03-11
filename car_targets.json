@@ -1,14 +1,14 @@
 {
     "GT3": {
-        "target_temps": [75, 90],
-        "target_pressures": [180, 200],
-        "max_imo_spread": 8,
-        "high_speed_threshold": 41.67
+        "target_temps": [167, 194],
+        "target_pressures": [26, 29],
+        "max_imo_spread": 15,
+        "high_speed_threshold": 93
     },
     "MX5": {
-        "target_temps": [70, 85],
-        "target_pressures": [190, 210],
-        "max_imo_spread": 6,
-        "high_speed_threshold": 35.0
+        "target_temps": [158, 185],
+        "target_pressures": [27.5, 30.5],
+        "max_imo_spread": 11,
+        "high_speed_threshold": 78
     }
 }
