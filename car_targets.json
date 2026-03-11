@@ -10,5 +10,23 @@
         "target_pressures": [27.5, 30.5],
         "max_imo_spread": 11,
         "high_speed_threshold": 78
+    },
+    "GT4": {
+        "target_temps": [160, 185],
+        "target_pressures": [26, 28],
+        "max_imo_spread": 12,
+        "high_speed_threshold": 85
+    },
+    "LMP2": {
+        "target_temps": [180, 210],
+        "target_pressures": [24, 26],
+        "max_imo_spread": 18,
+        "high_speed_threshold": 110
+    },
+    "PCUP": {
+        "target_temps": [175, 200],
+        "target_pressures": [27, 29],
+        "max_imo_spread": 15,
+        "high_speed_threshold": 95
     }
 }

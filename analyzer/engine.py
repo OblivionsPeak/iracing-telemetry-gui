@@ -272,9 +272,21 @@ class SetupAnalyzer:
         tire_prefixes = ['LF', 'RF', 'LR', 'RR']
         car_type = "GT3"
         if self.session_info and 'DriverInfo' in self.session_info:
-            car_name = self.session_info['DriverInfo'].get('DriverCarShortName', '')
-            if 'MX5' in car_name: car_type = "MX5"
-            elif 'porsche' in car_name.lower() or '992' in car_name: car_type = "GT3"
+            car_name = self.session_info['DriverInfo'].get('DriverCarShortName', '').lower()
+            if 'mx5' in car_name: 
+                car_type = "MX5"
+            elif 'gt4' in car_name:
+                car_type = "GT4"
+            elif 'p217' in car_name or 'lmp2' in car_name:
+                car_type = "LMP2"
+            elif 'porsche' in car_name and ('cup' in car_name or '992' in car_name):
+                # Distinguish Cup from GT3 if needed, but for now we follow user's request for PCUP
+                if 'gt3' in car_name and '992' in car_name:
+                    car_type = "GT3"
+                else:
+                    car_type = "PCUP"
+            elif 'porsche' in car_name or '992' in car_name:
+                car_type = "GT3"
         
         max_spread = self.targets.get(car_type, {}).get('max_imo_spread', 15) # spread in F
         
