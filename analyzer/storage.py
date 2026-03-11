@@ -84,7 +84,15 @@ class HistoryManager:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM sessions ORDER BY id DESC')
-        sessions = [dict(row) for row in cursor.fetchall()]
+        sessions = []
+        for row in cursor.fetchall():
+            s = dict(row)
+            if s.get('setup_yaml'):
+                try:
+                    s['setup_yaml'] = json.loads(s['setup_yaml'])
+                except:
+                    pass
+            sessions.append(s)
         conn.close()
         return sessions
 
@@ -93,9 +101,18 @@ class HistoryManager:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute('SELECT * FROM sessions WHERE id = ?', (session_id,))
-        session = dict(cursor.fetchone())
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return None
+        s = dict(row)
+        if s.get('setup_yaml'):
+            try:
+                s['setup_yaml'] = json.loads(s['setup_yaml'])
+            except:
+                pass
         conn.close()
-        return session
+        return s
 
     def get_laps(self, session_id):
         conn = sqlite3.connect(self.db_path)

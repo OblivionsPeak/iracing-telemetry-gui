@@ -63,6 +63,9 @@ class SetupAnalyzer:
         if self.df is None or self.df.empty:
             return {"setup": ["No telemetry data loaded."], "coaching": [], "strategy": {}}
 
+        # Pre-calculations
+        self._calculate_suspension_velocities()
+
         # Setup Analysis
         self._analyze_braking()
         self._analyze_cornering_robust()
@@ -70,6 +73,7 @@ class SetupAnalyzer:
         self._analyze_aero_balance()
         self._analyze_tire_imo()
         self._analyze_damper_curb()
+        self._analyze_differential()
         
         # Coaching Analysis
         self._analyze_trail_braking()
@@ -95,6 +99,90 @@ class SetupAnalyzer:
             return self.car_setup.get(category, {}).get(name)
         except:
             return None
+
+    def _get_car_type(self):
+        car_type = "GT3"
+        if self.session_info and 'DriverInfo' in self.session_info:
+            car_name = self.session_info['DriverInfo'].get('DriverCarShortName', '').lower()
+            if 'mx5' in car_name: return "MX5"
+            if 'gt4' in car_name: return "GT4"
+            if 'p217' in car_name or 'lmp2' in car_name: return "LMP2"
+            if 'porsche' in car_name and ('cup' in car_name or '992' in car_name):
+                if 'gt3' in car_name: return "GT3"
+                return "PCUP"
+            if 'porsche' in car_name or '992' in car_name: return "GT3"
+        return car_type
+
+    def _get_ambient_adjustment(self):
+        """Calculate temperature window shift based on track temp."""
+        if not self.session_info:
+            return 0
+        
+        weekend_info = self.session_info.get('WeekendInfo', {})
+        # iRacing temp strings can be "25.00 C" or "77.00 F"
+        track_temp_str = weekend_info.get('TrackSurfaceTemp', '100.00 F')
+        
+        try:
+            parts = track_temp_str.split()
+            val = float(parts[0])
+            unit = parts[1].upper() if len(parts) > 1 else 'F'
+            if unit == 'C':
+                track_temp_f = (val * 9/5) + 32
+            else:
+                track_temp_f = val
+        except:
+            track_temp_f = 100.0
+            
+        adjustment = 0
+        if track_temp_f > 100.0:
+            # Increase target by 0.5°F for every 1°F increase in track temp above 100°F
+            adjustment = (track_temp_f - 100.0) * 0.5
+            
+        return adjustment
+
+    def _get_normalized_tire_targets(self):
+        car_type = self._get_car_type()
+        base_targets = self.targets.get(car_type, {}).get('target_temps', [160, 200])
+        adj = self._get_ambient_adjustment()
+        return [t + adj for t in base_targets]
+
+    def _calculate_suspension_velocities(self):
+        """Compute ride height velocities in inches per second (Imperial)."""
+        rh_channels = ['LFrideHeight', 'RFrideHeight', 'LRrideHeight', 'RRrideHeight']
+        if not all(col in self.df.columns for col in rh_channels):
+            return
+        
+        for col in rh_channels:
+            # iRacing ride height is in meters, sample rate is 60Hz.
+            # Conversion: meters * 39.37 = inches.
+            # Velocity = (delta_meters * 39.37) / (1/60) = delta_meters * 39.37 * 60
+            self.df[f'{col}_vel'] = self.df[col].diff() * 39.37 * 60.0
+
+    def _analyze_differential(self):
+        """Analyze wheel speed deltas on driven axles to suggest diff changes."""
+        wheel_speeds = ['RRspeed', 'LRspeed', 'RFspeed', 'LFspeed']
+        if not all(col in self.df.columns for col in wheel_speeds + ['Throttle', 'SteeringWheelAngle']):
+            return
+
+        # High throttle > 80% and low steering (straight-line or mild corner exit)
+        # SteeringWheelAngle is in Radians. 0.25 rad is ~14 degrees.
+        mask = (self.df['Throttle'] > 0.8) & (self.df['SteeringWheelAngle'].abs() < 0.25)
+        if not mask.any():
+            return
+            
+        data = self.df[mask]
+        
+        # Check Rear Axle (Driven for most cars)
+        rear_min = np.maximum(data[['RRspeed', 'LRspeed']].min(axis=1), 1.0)
+        rear_delta = (data['RRspeed'] - data['LRspeed']).abs() / rear_min
+        
+        # Check Front Axle (for 4WD)
+        front_min = np.maximum(data[['RFspeed', 'LFspeed']].min(axis=1), 1.0)
+        front_delta = (data['RFspeed'] - data['LFspeed']).abs() / front_min
+        
+        # If one driven wheel spins significantly faster (> 10%) than the other
+        if (rear_delta > 0.10).any() or (front_delta > 0.10).any():
+            self.recommendations.append("Significant driven wheel speed delta detected (>10%) during high throttle. Consider increasing Differential Locking or Preload to improve traction.")
 
     def _analyze_cornering_robust(self):
         """Advanced cornering analysis using Entry, Mid, and Exit phases."""
@@ -238,9 +326,10 @@ class SetupAnalyzer:
         rh_channels = ['LFrideHeight', 'RFrideHeight', 'LRrideHeight', 'RRrideHeight']
         if all(col in self.df.columns for col in rh_channels):
             for col in rh_channels:
-                min_rh = self.df[col].min()
-                if min_rh < 0.005: # < 0.2 inches (approx 5mm)
-                    self.recommendations.append(f"Bottoming out detected on {col[:2]}. Increase ride height.")
+                # Convert meters to inches for internal logic
+                min_rh_in = self.df[col].min() * 39.37
+                if min_rh_in < 0.20: # < 0.2 inches
+                    self.recommendations.append(f"Bottoming out detected on {col[:2]} ({min_rh_in:.2f} in). Increase ride height.")
                     break
 
     def _analyze_aero_balance(self):
@@ -270,25 +359,10 @@ class SetupAnalyzer:
 
     def _analyze_tire_imo(self):
         tire_prefixes = ['LF', 'RF', 'LR', 'RR']
-        car_type = "GT3"
-        if self.session_info and 'DriverInfo' in self.session_info:
-            car_name = self.session_info['DriverInfo'].get('DriverCarShortName', '').lower()
-            if 'mx5' in car_name: 
-                car_type = "MX5"
-            elif 'gt4' in car_name:
-                car_type = "GT4"
-            elif 'p217' in car_name or 'lmp2' in car_name:
-                car_type = "LMP2"
-            elif 'porsche' in car_name and ('cup' in car_name or '992' in car_name):
-                # Distinguish Cup from GT3 if needed, but for now we follow user's request for PCUP
-                if 'gt3' in car_name and '992' in car_name:
-                    car_type = "GT3"
-                else:
-                    car_type = "PCUP"
-            elif 'porsche' in car_name or '992' in car_name:
-                car_type = "GT3"
+        car_type = self._get_car_type()
         
         max_spread = self.targets.get(car_type, {}).get('max_imo_spread', 15) # spread in F
+        target_min, target_max = self._get_normalized_tire_targets()
         
         for tire in tire_prefixes:
             temp_cols = [f'{tire}tempL', f'{tire}tempM', f'{tire}tempR']
@@ -301,29 +375,100 @@ class SetupAnalyzer:
                 if tire.startswith('L'): inner, outer = avg_R, avg_L
                 else: inner, outer = avg_L, avg_R
                 
+                # IMO Spread Analysis
                 spread = inner - outer
                 if abs(spread) > max_spread:
                     if spread > 0: self.recommendations.append(f"{tire} Inner too hot (+{spread:.1f}°F). Reduce neg camber.")
                     else: self.recommendations.append(f"{tire} Outer too hot ({spread:.1f}°F). Increase neg camber.")
                 
+                # Pressure Analysis
                 avg_IO = (inner + outer) / 2
                 mid_diff = avg_M - avg_IO
                 if mid_diff > 5.0: # ~3C -> 5.4F
                     self.recommendations.append(f"{tire} Middle too hot (+{mid_diff:.1f}°F). Decrease pressure.")
                 elif mid_diff < -5.0:
                     self.recommendations.append(f"{tire} Middle too cold ({mid_diff:.1f}°F). Increase pressure.")
+                
+                # Absolute Temperature Analysis (Normalized)
+                avg_tire_temp = (avg_L + avg_M + avg_R) / 3.0
+                if avg_tire_temp < target_min:
+                    self.recommendations.append(f"{tire} tires are running cold (Avg: {avg_tire_temp:.1f}°F, Target: {target_min:.1f}°F+). Increase aggressive driving or reduce cooling.")
+                elif avg_tire_temp > target_max:
+                    self.recommendations.append(f"{tire} tires are overheating (Avg: {avg_tire_temp:.1f}°F, Target: <{target_max:.1f}°F). Soften setup or adjust driving style.")
 
     def _analyze_damper_curb(self):
         rh_channels = ['LFrideHeight', 'RFrideHeight', 'LRrideHeight', 'RRrideHeight']
-        if not all(col in self.df.columns for col in rh_channels) or 'YawRate' not in self.df.columns:
+        if not all(f'{col}_vel' in self.df.columns for col in rh_channels) or 'YawRate' not in self.df.columns:
             return
+
         for col in rh_channels:
-            self.df[f'{col}_vel'] = self.df[col].diff() / (1/60.0)
-        for col in rh_channels:
-            curb_strikes = self.df[self.df[f'{col}_vel'].abs() > 0.3]
+            # Threshold: 12.0 inches/sec (approx 0.3 m/s)
+            curb_strikes = self.df[self.df[f'{col}_vel'].abs() > 12.0]
             if not curb_strikes.empty:
                 for idx in curb_strikes.index[:10]:
                     window = self.df.loc[max(0, idx-5):min(len(self.df)-1, idx+5)]
                     if window['YawRate'].abs().max() > 0.5:
-                        self.recommendations.append(f"Instability over curbs at {col[:2]}. Soften dampers.")
+                        self.recommendations.append(f"Instability over curbs at {col[:2]} ({self.df.loc[idx, f'{col}_vel']:.1f} in/s). Soften high-speed dampers.")
                         break
+
+    def diagnose_issue(self, issue_label):
+        """Specifically scans for a user-selected handling symptom."""
+        if self.df is None or self.df.empty:
+            return False, ["No telemetry data available. Please load a lap."]
+            
+        # Ensure latest analysis data is available
+        results = self.run_analysis()
+        confirmed = False
+        fixes = []
+
+        if issue_label == "Unstable under braking (entry oversteer)":
+            confirmed = any("Entry Oversteer" in r or "Rear brakes locking" in r for r in results['setup'])
+            fixes = [
+                "Move Brake Bias forward (increase percentage).",
+                "Stiffen front springs or Front ARB.",
+                "Increase Rear Wing angle for more aero stability.",
+                "Soften rear springs or Rear ARB.",
+                "Increase differential coast locking or preload."
+            ]
+        elif issue_label == "Car won't turn (entry understeer)":
+            confirmed = any("Entry Understeer" in r or "Front brakes locking" in r for r in results['setup'])
+            fixes = [
+                "Move Brake Bias rearward (decrease percentage).",
+                "Soften front springs or Front ARB.",
+                "Increase front wing angle or decrease front ride height (increase rake).",
+                "Increase negative front camber."
+            ]
+        elif issue_label == "Pushes mid-corner (mid understeer)":
+            confirmed = any("Mid-Corner Understeer" in r for r in results['setup'])
+            fixes = [
+                "Stiffen Rear ARB or rear springs.",
+                "Soften Front ARB or front springs.",
+                "Lower front ride height or raise rear ride height (increase rake).",
+                "Increase front negative camber."
+            ]
+        elif issue_label == "Rear steps out on throttle (exit oversteer)":
+            confirmed = any("Exit Oversteer" in r or "driven wheel speed delta" in r for r in results['setup'])
+            fixes = [
+                "Soften Rear ARB or rear springs.",
+                "Decrease Rear Wing angle (if high-speed) or increase if lacking aero grip.",
+                "Reduce rear ride height (decrease rake).",
+                "Increase differential power locking or preload to prevent inside wheel spin."
+            ]
+        elif issue_label == "Bottoms out over bumps":
+            confirmed = any("Bottoming out" in r or "Instability over curbs" in r for r in results['setup'])
+            fixes = [
+                "Increase ride height (Front and/or Rear).",
+                "Stiffen springs (increase spring rate).",
+                "Increase low-speed compression damping (to control aero) or high-speed compression (for bumps).",
+                "Add 'Packers' or 'Bumpstops' to limit travel before floor contact."
+            ]
+        elif issue_label == "Tires getting too hot":
+            confirmed = any("overheating" in r or "too hot" in r for r in results['setup'])
+            fixes = [
+                "Soften the overall setup (Springs/ARBs) to reduce the load on the tires.",
+                "Adjust tire pressures (typically higher to reduce carcass flex, or lower if sliding).",
+                "Check camber settings; excessive IMO spread can cause localized overheating.",
+                "Avoid over-driving (sliding) the car; smooth inputs reduce tire surface temps."
+            ]
+
+        return confirmed, fixes

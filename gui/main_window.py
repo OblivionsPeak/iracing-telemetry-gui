@@ -5,7 +5,7 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QListWidget, QSplitter, QTextEdit,
-    QGroupBox, QGridLayout, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView
+    QGroupBox, QGridLayout, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QComboBox
 )
 from PyQt6.QtCore import Qt, QTimer
 import pyqtgraph as pg
@@ -205,9 +205,15 @@ class MainWindow(QMainWindow):
         # Tab 2: Advanced Charts
         advanced_tab = QWidget()
         advanced_layout = QVBoxLayout(advanced_tab)
+        self.adv_tabs = QTabWidget()
+        advanced_layout.addWidget(self.adv_tabs)
+        
+        # Sub-tab: Map & Aero
+        map_aero_tab = QWidget()
+        map_aero_layout = QVBoxLayout(map_aero_tab)
         self.adv_plot_widget = pg.GraphicsLayoutWidget()
         self.adv_plot_widget.setBackground('k')
-        advanced_layout.addWidget(self.adv_plot_widget)
+        map_aero_layout.addWidget(self.adv_plot_widget)
 
         self.p_track = self.adv_plot_widget.addPlot(title="Track Map (Speed Heatmap)")
         self.p_track.setAspectLocked(True)
@@ -222,6 +228,26 @@ class MainWindow(QMainWindow):
         self.adv_plot_widget.nextRow()
         self.p_aero = self.adv_plot_widget.addPlot(title="Aero Map (FRH vs RRH)")
         
+        self.adv_tabs.addTab(map_aero_tab, "Map & Aero")
+
+        # Sub-tab: Suspension Histograms
+        suspension_tab = QWidget()
+        susp_layout = QVBoxLayout(suspension_tab)
+        self.susp_plot_widget = pg.GraphicsLayoutWidget()
+        self.susp_plot_widget.setBackground('k')
+        susp_layout.addWidget(self.susp_plot_widget)
+        
+        # 4 Histograms for each corner
+        self.hist_plots = {}
+        for i, corner in enumerate(['LF', 'RF', 'LR', 'RR']):
+            p = self.susp_plot_widget.addPlot(title=f"{corner} Velocity Histogram")
+            p.setLabel('bottom', "Speed", units='in/s')
+            p.setLabel('left', "Time %")
+            self.hist_plots[corner] = p
+            if i == 1: self.susp_plot_widget.nextRow()
+            
+        self.adv_tabs.addTab(suspension_tab, "Suspension")
+        
         self.right_tabs.addTab(advanced_tab, "Advanced Charts")
         
         self.main_splitter.addWidget(laps_container)
@@ -229,10 +255,55 @@ class MainWindow(QMainWindow):
         self.main_splitter.addWidget(self.right_tabs)
         self.main_splitter.setSizes([200, 350, 850])
 
+        # 2. History Tab
         history_tab = QWidget()
         history_layout = QVBoxLayout(history_tab)
         self.tabs.addTab(history_tab, "History")
         
+        # 3. Troubleshooter Tab
+        troubleshooter_tab = QWidget()
+        troubleshooter_layout = QVBoxLayout(troubleshooter_tab)
+        self.tabs.addTab(troubleshooter_tab, "Troubleshooter")
+
+        # Troubleshooter Wizard UI
+        ts_group = QGroupBox("Expert Setup Troubleshooter")
+        ts_vbox = QVBoxLayout(ts_group)
+        
+        ts_vbox.addWidget(QLabel("<b>Identify Handling Issue:</b>"))
+        
+        self.combo_issues = QComboBox()
+        self.combo_issues.setEditable(True)
+        self.combo_issues.addItems([
+            "Unstable under braking (entry oversteer)",
+            "Car won't turn (entry understeer)",
+            "Pushes mid-corner (mid understeer)",
+            "Rear steps out on throttle (exit oversteer)",
+            "Bottoms out over bumps",
+            "Tires getting too hot"
+        ])
+        ts_vbox.addWidget(self.combo_issues)
+        
+        ts_h_btns = QHBoxLayout()
+        self.btn_ts_scan = QPushButton("🔍 Scan Telemetry for Symptom")
+        self.btn_ts_scan.setFixedHeight(40)
+        self.btn_ts_scan.setStyleSheet("font-weight: bold; background-color: #3498db; color: white;")
+        self.btn_ts_scan.clicked.connect(self.on_troubleshooter_scan)
+        ts_h_btns.addWidget(self.btn_ts_scan)
+        
+        self.lbl_ts_status = QLabel("Ready to analyze...")
+        self.lbl_ts_status.setStyleSheet("font-size: 14px; font-weight: bold;")
+        ts_h_btns.addWidget(self.lbl_ts_status)
+        ts_vbox.addLayout(ts_h_btns)
+        
+        ts_vbox.addWidget(QLabel("<b>Recommended Setup Adjustments:</b>"))
+        self.txt_ts_fixes = QTextEdit()
+        self.txt_ts_fixes.setReadOnly(True)
+        self.txt_ts_fixes.setPlaceholderText("Scan telemetry to see targeted fixes...")
+        ts_vbox.addWidget(self.txt_ts_fixes)
+        
+        troubleshooter_layout.addWidget(ts_group)
+        
+        # 4. Current Setup Tab
         setup_tab = QWidget()
         setup_layout = QVBoxLayout(setup_tab)
         self.tabs.addTab(setup_tab, "Current Setup")
@@ -252,10 +323,15 @@ class MainWindow(QMainWindow):
         self.history_table.setHorizontalHeaderLabels(["ID", "Date", "Car", "Track", "File Path"])
         self.history_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.history_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.history_table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.history_table.doubleClicked.connect(self.on_history_double_clicked)
         
         history_layout.addWidget(self.history_table)
+        
+        self.btn_compare_setups = QPushButton("Compare Selected Setups")
+        self.btn_compare_setups.clicked.connect(self.on_compare_setups)
+        history_layout.addWidget(self.btn_compare_setups)
 
     def load_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -414,6 +490,43 @@ class MainWindow(QMainWindow):
                 self.p_aero.setLabel('bottom', "Front Ride Height", units='in')
                 self.p_aero.setLabel('left', "Rear Ride Height", units='in')
 
+            self.update_histograms(lap_data_list)
+
+    def update_histograms(self, lap_data_list):
+        for corner, p in self.hist_plots.items():
+            p.clear()
+            
+        colors = ['#3498db', '#e74c3c']
+        for i, (lap, df) in enumerate(lap_data_list):
+            if i >= 2: break
+            color = colors[i]
+            
+            # Ensure velocity columns exist
+            rh_channels = ['LFrideHeight', 'RFrideHeight', 'LRrideHeight', 'RRrideHeight']
+            if all(col in df.columns for col in rh_channels):
+                for col in rh_channels:
+                    vel_col = f'{col}_vel'
+                    if vel_col not in df.columns:
+                        df[vel_col] = df[col].diff() * 39.37 * 60.0
+            
+            for corner in ['LF', 'RF', 'LR', 'RR']:
+                vel_col = f'{corner}rideHeight_vel'
+                if vel_col in df.columns:
+                    vel_data = df[vel_col].dropna().values
+                    # Bins from -10 to +10 in/s, with e.g. 40 bins (0.5 in/s width)
+                    bins = np.linspace(-10, 10, 41)
+                    hist, bin_edges = np.histogram(vel_data, bins=bins)
+                    
+                    # Convert to percentage
+                    hist_pct = (hist / len(vel_data)) * 100 if len(vel_data) > 0 else hist
+                    
+                    x = bin_edges[:-1]
+                    width = bin_edges[1] - bin_edges[0]
+                    
+                    bg = pg.BarGraphItem(x=x, height=hist_pct, width=width, brush=pg.mkBrush(color, alpha=150))
+                    self.hist_plots[corner].addItem(bg)
+                    self.hist_plots[corner].setXRange(-10, 10)
+
     def generate_engineering_report(self):
         if self.primary_df is None: return
         file_path, _ = QFileDialog.getSaveFileName(self, "Save Report", f"report_lap_{self.primary_lap.lap_number}.html", "HTML (*.html)")
@@ -462,18 +575,76 @@ class MainWindow(QMainWindow):
             self.update_setup_display(external_setup)
             if self.primary_df is not None: self.generate_recommendations(self.primary_df)
 
-    def update_setup_display(self, setup_dict):
+    def on_compare_setups(self):
+        selected_rows = sorted(list(set(index.row() for index in self.history_table.selectedIndexes())))
+        if len(selected_rows) < 2:
+            print("Please select at least two sessions to compare.")
+            return
+            
+        session_a_id = int(self.history_table.item(selected_rows[0], 0).text())
+        session_b_id = int(self.history_table.item(selected_rows[1], 0).text())
+        
+        session_a = self.history_manager.get_session(session_a_id)
+        session_b = self.history_manager.get_session(session_b_id)
+        
+        if session_a and session_b:
+            setup_a = session_a.get('setup_yaml', {})
+            setup_b = session_b.get('setup_yaml', {})
+            self.update_setup_display(setup_a, setup_b)
+            self.tabs.setCurrentIndex(3) # Switch to Setup tab (index 3 now)
+
+    def update_setup_display(self, setup_a, setup_b=None):
         self.setup_tree.setRowCount(0)
+        if setup_b:
+            self.setup_tree.setColumnCount(3)
+            self.setup_tree.setHorizontalHeaderLabels(["Parameter", "Session A", "Session B"])
+        else:
+            self.setup_tree.setColumnCount(2)
+            self.setup_tree.setHorizontalHeaderLabels(["Parameter", "Value"])
+
         rows = []
-        def flatten(d, p=''):
-            for k, v in d.items():
-                if isinstance(v, dict): flatten(v, p + k + ' > ')
-                else: rows.append((p + k, str(v)))
-        flatten(setup_dict)
+        def flatten(d1, d2, p=''):
+            # Use keys from both if they differ, but usually they are the same
+            keys = sorted(list(set(d1.keys()) | set(d2.keys() if d2 else [])))
+            for k in keys:
+                v1 = d1.get(k)
+                v2 = d2.get(k) if d2 else None
+                
+                if isinstance(v1, dict) or isinstance(v2, dict):
+                    flatten(v1 or {}, v2 or {}, p + k + ' > ')
+                else:
+                    rows.append((p + k, str(v1) if v1 is not None else "", str(v2) if v2 is not None else ""))
+        
+        flatten(setup_a, setup_b)
         self.setup_tree.setRowCount(len(rows))
-        for i, (k, v) in enumerate(rows):
+        
+        import re
+        def parse_val(s):
+            match = re.match(r"([-+]?\d*\.\d+|\d+)", str(s))
+            return float(match.group(1)) if match else None
+
+        for i, (k, v1, v2) in enumerate(rows):
             self.setup_tree.setItem(i, 0, QTableWidgetItem(k))
-            self.setup_tree.setItem(i, 1, QTableWidgetItem(v))
+            item1 = QTableWidgetItem(v1)
+            self.setup_tree.setItem(i, 1, item1)
+            
+            if setup_b:
+                item2 = QTableWidgetItem(v2)
+                self.setup_tree.setItem(i, 2, item2)
+                
+                # Highlight logic
+                n1 = parse_val(v1)
+                n2 = parse_val(v2)
+                if n1 is not None and n2 is not None:
+                    if n2 > n1:
+                        item2.setBackground(Qt.GlobalColor.green)
+                        item2.setForeground(Qt.GlobalColor.black)
+                    elif n2 < n1:
+                        item2.setBackground(Qt.GlobalColor.red)
+                        item2.setForeground(Qt.GlobalColor.white)
+                elif v1 != v2:
+                    item2.setBackground(Qt.GlobalColor.yellow)
+                    item2.setForeground(Qt.GlobalColor.black)
 
     def generate_track_outline(self):
         if not self.laps: return
@@ -547,6 +718,34 @@ class MainWindow(QMainWindow):
         for i, r in enumerate(recs['setup'], 1): self.txt_recs.append(f"{i}. {r}")
         self.txt_recs.append("<br><b>🏁 Coaching</b>")
         for i, r in enumerate(recs['coaching'], 1): self.txt_recs.append(f"{i}. {r}")
+
+    def on_troubleshooter_scan(self):
+        if self.primary_df is None:
+            self.lbl_ts_status.setText("❌ No lap loaded")
+            self.lbl_ts_status.setStyleSheet("color: #e74c3c; font-weight: bold;")
+            return
+        
+        issue = self.combo_issues.currentText()
+        self.lbl_ts_status.setText("⏳ Scanning...")
+        self.lbl_ts_status.setStyleSheet("color: #f39c12; font-weight: bold;")
+        
+        # Ensure analyzer is ready with current data
+        if not self.analyzer:
+            self.analyzer = SetupAnalyzer(self.primary_df, self.session_info)
+            
+        confirmed, fixes = self.analyzer.diagnose_issue(issue)
+        
+        if confirmed:
+            self.lbl_ts_status.setText("✅ Confirmed by Telemetry")
+            self.lbl_ts_status.setStyleSheet("color: #2ecc71; font-weight: bold;")
+        else:
+            self.lbl_ts_status.setText("⚠️ Symptom not definitively found")
+            self.lbl_ts_status.setStyleSheet("color: #7f8c8d; font-weight: bold;")
+            
+        self.txt_ts_fixes.clear()
+        self.txt_ts_fixes.append(f"<b>Fixes for: {issue}</b><br>")
+        for i, fix in enumerate(fixes, 1):
+            self.txt_ts_fixes.append(f"{i}. {fix}")
 
     def export_csv(self):
         if self.primary_df is None: return
