@@ -49,8 +49,12 @@ class TelemetryParser:
             # irsdk uses cp1252 for yaml data
             yaml_data = self.ibt._shared_mem[start : start + length].rstrip(b'\x00').decode('cp1252')
             self.session_info = yaml.safe_load(yaml_data)
+            
+            # Specifically extract CarSetup for the SetupAnalyzer
+            self.car_setup = self.session_info.get('CarSetup', {})
         except Exception:
             self.session_info = {}
+            self.car_setup = {}
 
         # Store available telemetry variable names
         self.var_names = self.ibt.var_headers_names

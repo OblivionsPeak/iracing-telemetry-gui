@@ -12,8 +12,17 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# PyInstaller / Build artifacts
+build/
+dist/
+*.spec
+
 # iRacing Telemetry files
 *.ibt
+*.html
+
+# Local Database
+*.db
 
 # IDEs
 .idea/

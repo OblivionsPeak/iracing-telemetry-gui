@@ -63,14 +63,20 @@ class MainWindow(QMainWindow):
         self.lbl_file = QLabel("No file loaded.")
         self.lbl_file.setStyleSheet("color: gray;")
         
+        header_info = QVBoxLayout()
         self.lbl_car = QLabel("")
-        self.lbl_car.setStyleSheet("font-weight: bold; color: #2c3e50; margin-left: 20px;")
+        self.lbl_car.setStyleSheet("font-weight: bold; font-size: 14px; color: #2c3e50;")
+        self.lbl_track = QLabel("")
+        self.lbl_track.setStyleSheet("font-weight: bold; font-size: 12px; color: #7f8c8d;")
+        header_info.addWidget(self.lbl_car)
+        header_info.addWidget(self.lbl_track)
         
         top_bar.addWidget(self.btn_load)
         top_bar.addWidget(self.btn_live)
         top_bar.addWidget(self.btn_export)
+        top_bar.addWidget(self.btn_report)
         top_bar.addWidget(self.lbl_file)
-        top_bar.addWidget(self.lbl_car)
+        top_bar.addLayout(header_info)
         top_bar.addStretch()
         
         main_layout.addLayout(top_bar)
@@ -200,10 +206,13 @@ class MainWindow(QMainWindow):
         advanced_tab = QWidget()
         advanced_layout = QVBoxLayout(advanced_tab)
         self.adv_plot_widget = pg.GraphicsLayoutWidget()
+        # Set black background for advanced charts to make heatmap pop
+        self.adv_plot_widget.setBackground('k')
         advanced_layout.addWidget(self.adv_plot_widget)
 
         self.p_track = self.adv_plot_widget.addPlot(title="Track Map (Speed Heatmap)")
         self.p_track.setAspectLocked(True)
+        self.p_track.showGrid(x=True, y=True, alpha=0.3)
         
         self.curr_pos_dot = pg.ScatterPlotItem(size=12, pen=pg.mkPen('w', width=1), brush=pg.mkBrush('y'))
         self.p_track.addItem(self.curr_pos_dot)
@@ -226,6 +235,21 @@ class MainWindow(QMainWindow):
         history_tab = QWidget()
         history_layout = QVBoxLayout(history_tab)
         self.tabs.addTab(history_tab, "History")
+        
+        # 3. Current Setup Tab
+        setup_tab = QWidget()
+        setup_layout = QVBoxLayout(setup_tab)
+        self.tabs.addTab(setup_tab, "Current Setup")
+        
+        self.setup_tree = QTableWidget()
+        self.setup_tree.setColumnCount(2)
+        self.setup_tree.setHorizontalHeaderLabels(["Parameter", "Value"])
+        self.setup_tree.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        setup_layout.addWidget(self.setup_tree)
+        
+        btn_import_sto = QPushButton("Import .sto (HTML Export)")
+        btn_import_sto.clicked.connect(self.import_external_setup)
+        setup_layout.addWidget(btn_import_sto)
         
         self.history_table = QTableWidget()
         self.history_table.setColumnCount(5)
@@ -272,9 +296,20 @@ class MainWindow(QMainWindow):
             self.lbl_file.setText(f"Loaded: {os.path.basename(file_path)}")
             self.lbl_file.setStyleSheet("color: green;")
             
-            # Display Car Name
+            # Display Car & Track Name
+            weekend_info = self.session_info.get('WeekendInfo', {})
+            track_name = weekend_info.get('TrackDisplayName', "Unknown Track")
             car_name = self.session_info.get('DriverInfo', {}).get('DriverCarFullName', "Unknown Car")
-            self.lbl_car.setText(f"Car: {car_name}")
+            
+            self.lbl_car.setText(f"Vehicle: {car_name}")
+            self.lbl_track.setText(f"Track: {track_name}")
+            
+            # Populate Current Setup Tab
+            car_setup = getattr(self.parser, 'car_setup', {})
+            self.update_setup_display(car_setup)
+            
+            # Setup Track Map Outline (using the first available lap with coordinates)
+            self.generate_track_outline()
             
             # Auto-select first flying lap
             for i, lap in enumerate(self.laps):
@@ -580,6 +615,102 @@ class MainWindow(QMainWindow):
             self.lbl_file.setText(f"Failed to save report: {str(e)}")
             self.lbl_file.setStyleSheet("color: red;")
 
+    def import_external_setup(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Import iRacing Setup (HTML Export)", "", "HTML Files (*.html);;All Files (*)"
+        )
+        if not file_path:
+            return
+
+        try:
+            from bs4 import BeautifulSoup
+            with open(file_path, 'r', encoding='utf-8') as f:
+                soup = BeautifulSoup(f, 'html.parser')
+            
+            external_setup = {}
+            # iRacing HTML exports often have multiple tables
+            tables = soup.find_all('table')
+            for table in tables:
+                rows = table.find_all('tr')
+                for row in rows:
+                    cols = row.find_all('td')
+                    if len(cols) == 2:
+                        key = cols[0].text.strip().replace(':', '')
+                        value = cols[1].text.strip()
+                        # We don't have nested category info here easily, 
+                        # so we'll store in a flat dict for context
+                        external_setup[key] = value
+            
+            if external_setup:
+                # Merge into existing session_info car_setup for the analyzer
+                if self.session_info:
+                    # We store it in a special key to avoid overwriting nested structure
+                    self.session_info['ExternalSetup'] = external_setup
+                    
+                self.lbl_file.setText(f"Imported Setup: {os.path.basename(file_path)}")
+                self.lbl_file.setStyleSheet("color: purple;")
+                
+                # Update UI Table
+                self.update_setup_display(external_setup)
+                
+                # Re-run analysis if a lap is selected
+                if self.primary_df is not None:
+                    self.generate_recommendations(self.primary_df)
+                    
+        except Exception as e:
+            self.txt_recs.setPlainText(f"Failed to import external setup: {str(e)}")
+
+    def update_setup_display(self, setup_dict):
+        """Populates the Setup Tree table with key-value pairs."""
+        self.setup_tree.setRowCount(0)
+        
+        # Flatten nested iRacing setup if needed
+        rows = []
+        def flatten(d, prefix=''):
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    flatten(v, prefix + k + ' > ')
+                else:
+                    rows.append((prefix + k, str(v)))
+        
+        flatten(setup_dict)
+        
+        self.setup_tree.setRowCount(len(rows))
+        for i, (key, val) in enumerate(rows):
+            self.setup_tree.setItem(i, 0, QTableWidgetItem(key))
+            self.setup_tree.setItem(i, 1, QTableWidgetItem(val))
+
+    def generate_track_outline(self):
+        """Creates a static high-contrast outline of the track using the longest lap coordinates."""
+        if not self.laps: return
+        
+        # Clear existing outline
+        self.p_track.clear()
+        self.p_track.addItem(self.curr_pos_dot)
+        
+        # Find the lap with most samples (likely a full lap)
+        best_lap = max(self.laps, key=lambda l: l.end_index - l.start_index)
+        
+        # Load coordinates for this lap
+        df = self.parser.get_lap_data(best_lap.lap_number, ['CarIdxX', 'CarIdxY'])
+        if not df.empty:
+            player_idx = self.session_info.get('DriverInfo', {}).get('DriverCarIdx', 0) if self.session_info else 0
+            
+            # Extract player coordinates robustly
+            def extract_coord(val):
+                if isinstance(val, (list, tuple, np.ndarray)):
+                    return val[player_idx] if len(val) > player_idx else 0
+                return val
+
+            tx = df['CarIdxX'].apply(extract_coord).values
+            ty = df['CarIdxY'].apply(extract_coord).values
+            
+            mask = (tx != 0) | (ty != 0)
+            if mask.any():
+                # Use high-contrast Neon Green for the track outline
+                self.p_track.plot(tx[mask], ty[mask], pen=pg.mkPen('#00ff00', width=2), name="Track Outline")
+                self.p_track.autoRange()
+
     def on_history_double_clicked(self, index):
         row = index.row()
         file_path = self.history_table.item(row, 4).text()
@@ -638,6 +769,15 @@ class MainWindow(QMainWindow):
                         if isinstance(sample, (list, tuple, np.ndarray)):
                              df[col] = df[col].apply(lambda x: x[player_idx] if len(x) > player_idx else 0)
                 
+                # Check if coordinates are actually present (non-zero)
+                coords_present = False
+                if 'CarIdxX' in df.columns:
+                    coords_present = (df['CarIdxX'] != 0).any()
+                
+                if not coords_present:
+                    self.lbl_file.setText(f"Loaded: Lap {lap.lap_number} (Warning: No GPS data in file)")
+                    self.lbl_file.setStyleSheet("color: orange;")
+                
                 lap_data_list.append((lap, df))
 
         if not lap_data_list:
@@ -681,18 +821,54 @@ class MainWindow(QMainWindow):
             self.sector_table.setItem(i, 0, QTableWidgetItem(f"Sector {i+1}"))
             self.sector_table.setItem(i, 1, QTableWidgetItem(f"{sector_time:.3f}s"))
 
+    def generate_track_outline(self):
+        """Creates a static high-contrast outline of the track using the longest lap coordinates."""
+        if not self.laps: return
+        
+        # Clear existing items but keep the scrub dot
+        self.p_track.clear()
+        self.p_track.addItem(self.curr_pos_dot)
+        
+        # Find the lap with most samples (likely a full lap)
+        best_lap = max(self.laps, key=lambda l: l.end_index - l.start_index)
+        
+        # Load coordinates for this lap
+        df = self.parser.get_lap_data(best_lap.lap_number, ['CarIdxX', 'CarIdxY'])
+        if not df.empty:
+            player_idx = self.session_info.get('DriverInfo', {}).get('DriverCarIdx', 0) if self.session_info else 0
+            
+            # Extract player coordinates robustly
+            def extract_coord(val):
+                if isinstance(val, (list, tuple, np.ndarray)):
+                    return val[player_idx] if len(val) > player_idx else 0
+                return val
+
+            tx = df['CarIdxX'].apply(extract_coord).values
+            ty = df['CarIdxY'].apply(extract_coord).values
+            
+            mask = (tx != 0) | (ty != 0)
+            if mask.any():
+                # Use White for the track outline against the black background
+                self.p_track.plot(tx[mask], ty[mask], pen=pg.mkPen('#ffffff', width=1, style=Qt.PenStyle.SolidLine), name="Track Outline")
+                self.p_track.autoRange()
+
     def update_graphs(self, lap_data_list):
         self.p1.clear()
         self.p2.clear()
         self.p3.clear()
-        self.p_track.clear()
-        self.p_aero.clear()
         
-        # Re-add persistent items after clear
+        # Re-add persistent items to telemetry plots
         self.p1.addItem(self.v_line1, ignoreBounds=True)
         self.p2.addItem(self.v_line2, ignoreBounds=True)
         self.p3.addItem(self.v_line3, ignoreBounds=True)
+        
+        # We don't clear p_track here to keep the outline, we just add/remove the active lap items
+        # To do this cleanly, we clear p_track but then RE-GENERATE the outline
+        self.p_track.clear()
         self.p_track.addItem(self.curr_pos_dot)
+        self.generate_track_outline() # Re-add ghost outline
+        
+        self.p_aero.clear()
         
         # Hide scrub lines initially on new data
         self.v_line1.hide()
@@ -700,7 +876,7 @@ class MainWindow(QMainWindow):
         self.v_line3.hide()
         self.curr_pos_dot.hide()
         
-        colors = ['b', 'r'] # Blue for Lap A, Red for Lap B
+        colors = ['#00d2ff', '#ff0055'] # Bright Cyan and Bright Magenta
         
         for i, (lap, df) in enumerate(lap_data_list):
             if i >= 2: break
@@ -713,7 +889,7 @@ class MainWindow(QMainWindow):
                 x = np.arange(len(df))
             
             if 'Speed' in df.columns:
-                self.p1.plot(x, df['Speed'].values * 3.6, pen=pg.mkPen(color, width=1.5), name=f"Lap {lap.lap_number}")
+                self.p1.plot(x, df['Speed'].values * 3.6, pen=pg.mkPen(color, width=2), name=f"Lap {lap.lap_number}")
                 
             if 'Throttle' in df.columns:
                 self.p2.plot(x, df['Throttle'].values, pen=pg.mkPen(color, style=Qt.PenStyle.SolidLine), name=f"T Lap {lap.lap_number}")
@@ -727,39 +903,49 @@ class MainWindow(QMainWindow):
             
             x_delta, delta_values = calculate_delta(df_a, df_b)
             if x_delta is not None:
-                self.p3.plot(x_delta, delta_values, pen=pg.mkPen('k', width=1.5), name="Delta (A-B)")
+                self.p3.plot(x_delta, delta_values, pen=pg.mkPen('#2c3e50', width=1.5), name="Delta (A-B)")
                 self.p3.addLine(y=0, pen=pg.mkPen('gray', style=Qt.PenStyle.DashLine))
 
         # Advanced Charts
         if lap_data_list:
+            player_idx = self.session_info.get('DriverInfo', {}).get('DriverCarIdx', 0) if self.session_info else 0
+            
+            def extract_coord(val):
+                if isinstance(val, (list, tuple, np.ndarray)):
+                    return val[player_idx] if len(val) > player_idx else 0
+                return val
+
             # 1. Track Map
             if len(lap_data_list) == 1:
                 # Single Lap: Speed Heatmap
                 lap, df = lap_data_list[0]
                 if 'CarIdxX' in df.columns and 'CarIdxY' in df.columns:
-                    tx = df['CarIdxX'].values
-                    ty = df['CarIdxY'].values
+                    tx = df['CarIdxX'].apply(extract_coord).values
+                    ty = df['CarIdxY'].apply(extract_coord).values
                     speed = df['Speed'].values * 3.6
                     mask = (tx != 0) | (ty != 0)
                     if mask.any():
                         tx, ty, speed = tx[mask], ty[mask], speed[mask]
+                        # Use high-contrast heatmap colors
                         norm_speed = (speed - speed.min()) / (speed.max() - speed.min() + 1e-6)
                         try:
-                            cmap = pg.colormap.get('jet')
+                            # 'inferno' or 'viridis' are good high-contrast maps
+                            cmap = pg.colormap.get('plasma')
                             brushes = cmap.map(norm_speed, mode='byte')
                         except:
-                            brushes = [pg.mkBrush('b') for _ in range(len(tx))]
-                        scatter = pg.ScatterPlotItem(x=tx, y=ty, brush=brushes, size=3, pen=None)
+                            brushes = [pg.mkBrush('y') for _ in range(len(tx))]
+                        
+                        scatter = pg.ScatterPlotItem(x=tx, y=ty, brush=brushes, size=4, pen=None)
                         self.p_track.addItem(scatter)
             else:
-                # Comparison: Racing Line Comparison (Blue vs Red)
+                # Comparison: Racing Line Comparison (Cyan vs Magenta)
                 for i, (lap, df) in enumerate(lap_data_list[:2]):
                     if 'CarIdxX' in df.columns and 'CarIdxY' in df.columns:
-                        tx = df['CarIdxX'].values
-                        ty = df['CarIdxY'].values
+                        tx = df['CarIdxX'].apply(extract_coord).values
+                        ty = df['CarIdxY'].apply(extract_coord).values
                         mask = (tx != 0) | (ty != 0)
                         if mask.any():
-                            self.p_track.plot(tx[mask], ty[mask], pen=pg.mkPen(colors[i], width=2), name=f"Lap {lap.lap_number}")
+                            self.p_track.plot(tx[mask], ty[mask], pen=pg.mkPen(colors[i], width=3), name=f"Lap {lap.lap_number}")
 
             # 2. Aero Map (Primary Lap)
             lap, df = lap_data_list[0]
@@ -768,7 +954,7 @@ class MainWindow(QMainWindow):
             if all(c in df.columns for c in rrh_cols + frh_cols):
                 frh = (df['LFrideHeight'] + df['RFrideHeight']) / 2 * 1000 # mm
                 rrh = (df['LRrideHeight'] + df['RRrideHeight']) / 2 * 1000 # mm
-                self.p_aero.plot(frh.values, rrh.values, pen=None, symbol='o', symbolSize=4, symbolBrush='b', name="Aero Platform")
+                self.p_aero.plot(frh.values, rrh.values, pen=None, symbol='o', symbolSize=4, symbolBrush='#3498db', name="Aero Platform")
                 self.p_aero.setLabel('bottom', "Front Ride Height", units='mm')
                 self.p_aero.setLabel('left', "Rear Ride Height", units='mm')
 

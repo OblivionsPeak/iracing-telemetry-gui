@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('car_targets.json', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
