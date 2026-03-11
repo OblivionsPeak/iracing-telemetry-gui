@@ -3,3 +3,5 @@ pandas
 numpy
 PyQt6
 pyqtgraph
+PyYAML
+fpdf2

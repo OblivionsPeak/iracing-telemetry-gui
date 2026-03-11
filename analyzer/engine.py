@@ -3,11 +3,36 @@ import numpy as np
 import json
 import os
 
+def calculate_delta(df_a: pd.DataFrame, df_b: pd.DataFrame):
+    """
+    Calculates the time delta between two laps by interpolating Lap B's time 
+    onto Lap A's distance points. Returns (time_a, delta_time).
+    """
+    if 'LapDistPct' not in df_a.columns or 'LapDistPct' not in df_b.columns:
+        return None, None
+    if 'SessionTime' not in df_a.columns or 'SessionTime' not in df_b.columns:
+        return None, None
+
+    # Normalize SessionTime to start from 0
+    time_a = df_a['SessionTime'].values - df_a['SessionTime'].iloc[0]
+    time_b = df_b['SessionTime'].values - df_b['SessionTime'].iloc[0]
+    
+    dist_a = df_a['LapDistPct'].values
+    dist_b = df_b['LapDistPct'].values
+
+    # Interpolate Lap B's time into lap based on Lap A's distance points
+    interp_time_b_on_a = np.interp(dist_a, dist_b, time_b)
+    
+    delta = time_a - interp_time_b_on_a
+    return time_a, delta
+
 class SetupAnalyzer:
     def __init__(self, dataframe: pd.DataFrame = None, session_info: dict = None):
         self.df = dataframe
         self.session_info = session_info
         self.recommendations = []
+        self.coaching_recommendations = []
+        self.strategy_diagnostics = {}
         self.diagnostics = {}
         self.targets = self._load_targets()
 
@@ -23,12 +48,14 @@ class SetupAnalyzer:
             self.df = lap_df
 
         self.recommendations.clear()
+        self.coaching_recommendations.clear()
+        self.strategy_diagnostics.clear()
         self.diagnostics.clear()
 
         if self.df is None or self.df.empty:
-            self.recommendations.append("No telemetry data loaded.")
-            return self.recommendations
+            return {"setup": ["No telemetry data loaded."], "coaching": [], "strategy": {}}
 
+        # Setup Analysis
         self._analyze_braking()
         self._analyze_cornering()
         self._analyze_ride_height()
@@ -36,10 +63,116 @@ class SetupAnalyzer:
         self._analyze_tire_imo()
         self._analyze_damper_curb()
         
+        # Coaching Analysis
+        self._analyze_trail_braking()
+        self._analyze_throttle_smoothness()
+        self._analyze_gear_rpm()
+
+        # Strategy Analysis
+        self._analyze_strategy()
+        
         if not self.recommendations:
             self.recommendations.append("Your setup looks well-balanced based on this limited telemetry run.")
             
-        return self.recommendations
+        return {
+            "setup": self.recommendations,
+            "coaching": self.coaching_recommendations,
+            "strategy": self.strategy_diagnostics
+        }
+
+    def _analyze_strategy(self):
+        if 'FuelLevel' not in self.df.columns:
+            return
+
+        # Fuel per lap for this specific lap
+        fuel_start = self.df['FuelLevel'].iloc[0]
+        fuel_end = self.df['FuelLevel'].iloc[-1]
+        fuel_used = fuel_start - fuel_end
+        
+        # If fuel used is negative (refueled?), set to 0
+        fuel_used = max(0, fuel_used)
+        
+        self.strategy_diagnostics['FuelPerLap'] = fuel_used
+        
+        # Estimated laps remaining
+        last_fuel = self.df['FuelLevel'].iloc[-1]
+        if fuel_used > 0:
+            est_laps = last_fuel / fuel_used
+            self.strategy_diagnostics['EstimatedLapsRemaining'] = est_laps
+        else:
+            self.strategy_diagnostics['EstimatedLapsRemaining'] = 0
+
+    def _analyze_gear_rpm(self):
+        if 'RPM' not in self.df.columns or 'Gear' not in self.df.columns:
+            return
+
+        redline = 7000 # Default
+        if self.session_info and 'DriverInfo' in self.session_info:
+            redline = self.session_info['DriverInfo'].get('DriverCarRedLine', 7000)
+
+        over_rev_threshold = redline * 0.95
+        lugging_threshold = redline * 0.40
+        
+        over_rev_count = len(self.df[self.df['RPM'] > over_rev_threshold])
+        # Lugging: Only check in high gears (3 and above)
+        lugging_mask = (self.df['Gear'] >= 3) & (self.df['RPM'] < lugging_threshold) & (self.df['Throttle'] > 0.5)
+        lugging_count = len(self.df[lugging_mask])
+        
+        advice = []
+        if over_rev_count > 10: # Some threshold to avoid transient spikes
+            advice.append("Over-revving detected: You are holding gears too long. Shift earlier to stay in the power band and save the engine.")
+        
+        if lugging_count > 10:
+            advice.append("Engine lugging detected: You are in too high a gear for the corner speed. Downshift more to maintain RPM.")
+            
+        if not advice:
+            advice.append("Gear selection and RPM range look optimal.")
+            
+        self.strategy_diagnostics['GearAdvice'] = advice
+
+    def _analyze_trail_braking(self):
+        if 'Brake' not in self.df.columns or 'SteeringWheelAngle' not in self.df.columns:
+            return
+
+        df = self.df.copy()
+        df['SteerAbs'] = df['SteeringWheelAngle'].abs()
+        df['SteerDelta'] = df['SteerAbs'].diff().fillna(0)
+        df['BrakeDelta'] = df['Brake'].diff().fillna(0)
+
+        # Trail braking: Brake decreasing while steering increasing
+        trail_mask = (df['BrakeDelta'] < 0) & (df['SteerDelta'] > 0) & (df['Brake'] > 0.05)
+        
+        if trail_mask.any():
+            # Check for abrupt release
+            # If the driver releases the brake too abruptly (high negative derivative)
+            # 0.15 change per sample at 60Hz is quite fast (~100% to 0 in < 0.1s)
+            max_release = df.loc[trail_mask, 'BrakeDelta'].abs().max()
+            if max_release > 0.15:
+                self.coaching_recommendations.append(
+                    "Trail Braking: You are releasing the brake too abruptly during turn-in. Try to 'bleed' the pressure off more slowly as you increase steering angle."
+                )
+
+    def _analyze_throttle_smoothness(self):
+        if 'Throttle' not in self.df.columns or 'SteeringWheelAngle' not in self.df.columns:
+            return
+            
+        df = self.df.copy()
+        df['SteerAbs'] = df['SteeringWheelAngle'].abs()
+        df['SteerDelta'] = df['SteerAbs'].diff().fillna(0)
+        df['ThrottleDelta'] = df['Throttle'].diff().fillna(0)
+        
+        # Corner exit: Steering decreasing and Throttle increasing/active
+        exit_mask = (df['SteerDelta'] < 0) & (df['Throttle'] > 0.2)
+        
+        if exit_mask.any():
+            exit_data = df[exit_mask]
+            # Variance of throttle derivative - high variance means pumping or choppy throttle
+            throttle_var = exit_data['ThrottleDelta'].var()
+            
+            if throttle_var > 0.001: # Calibrated threshold for choppiness
+                self.coaching_recommendations.append(
+                    "Throttle Smoothness: Choppy throttle detected on corner exit. Aim for a single, progressive application to maximize traction."
+                )
 
     def _analyze_braking(self):
         # Look for instances of high braking and potential front/rear lockups
@@ -147,8 +280,11 @@ class SetupAnalyzer:
         
         car_type = "GT3" # Default
         if self.session_info and 'DriverInfo' in self.session_info:
-            if 'MX5' in self.session_info['DriverInfo'].get('DriverCarShortName', ''):
+            car_name = self.session_info['DriverInfo'].get('DriverCarShortName', '')
+            if 'MX5' in car_name:
                 car_type = "MX5"
+            elif 'porsche' in car_name.lower() or '992' in car_name:
+                car_type = "GT3" # We use GT3 targets for the Porsche GT3 R
         
         max_spread = self.targets.get(car_type, {}).get('max_imo_spread', 8)
 

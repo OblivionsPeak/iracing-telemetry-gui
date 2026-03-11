@@ -5,15 +5,16 @@ import yaml
 
 class Lap:
     """Represents a single lap in the telemetry session."""
-    def __init__(self, lap_number, start_index, end_index, lap_time, is_flying=False):
+    def __init__(self, lap_number, start_index, end_index, lap_time, is_flying=False, sectors=None):
         self.lap_number = lap_number
         self.start_index = start_index
         self.end_index = end_index
         self.lap_time = lap_time
         self.is_flying = is_flying
+        self.sectors = sectors if sectors is not None else []
 
     def __repr__(self):
-        return f"Lap({self.lap_number}, flying={self.is_flying}, time={self.lap_time:.3f}s)"
+        return f"Lap({self.lap_number}, flying={self.is_flying}, time={self.lap_time:.3f}s, sectors={self.sectors})"
 
 class TelemetryParser:
     def __init__(self):
@@ -73,6 +74,7 @@ class TelemetryParser:
         # Load only the minimal channels needed for segmentation
         laps_raw = self.ibt.get_all('Lap')
         times_raw = self.ibt.get_all('SessionTime')
+        dist_pct_raw = self.ibt.get_all('LapDistPct') if 'LapDistPct' in self.var_names else None
         
         if not laps_raw or not times_raw:
             self.laps = []
@@ -99,6 +101,41 @@ class TelemetryParser:
         start_idx = 0
         current_lap_val = laps_raw[0]
 
+        def calculate_sectors(start, end):
+            if dist_pct_raw is None:
+                return []
+            
+            # Find indices for 25%, 50%, 75%
+            # We want to find the first index where LapDistPct crosses the threshold
+            splits = [0.25, 0.50, 0.75]
+            split_indices = []
+            
+            # Search within the lap range
+            current_search_idx = start
+            for split in splits:
+                found = False
+                for i in range(current_search_idx, end + 1):
+                    if dist_pct_raw[i] >= split:
+                        split_indices.append(i)
+                        current_search_idx = i
+                        found = True
+                        break
+                if not found:
+                    split_indices.append(end) # Fallback if split point not reached
+            
+            # Sector times: 
+            # S1: split_indices[0] - start
+            # S2: split_indices[1] - split_indices[0]
+            # S3: split_indices[2] - split_indices[1]
+            # S4: end - split_indices[2]
+            
+            times = []
+            times.append(float(times_raw[split_indices[0]] - times_raw[start]))
+            times.append(float(times_raw[split_indices[1]] - times_raw[split_indices[0]]))
+            times.append(float(times_raw[split_indices[2]] - times_raw[split_indices[1]]))
+            times.append(float(times_raw[end] - times_raw[split_indices[2]]))
+            return times
+
         for i in range(1, len(laps_raw)):
             if laps_raw[i] != current_lap_val:
                 # End of previous lap detected
@@ -119,12 +156,15 @@ class TelemetryParser:
                     if any(on_pit_road[start_idx:i]):
                         is_flying = False
                 
+                sectors = calculate_sectors(start_idx, end_idx)
+                
                 self.laps.append(Lap(
                     lap_number=int(current_lap_val),
                     start_index=start_idx,
                     end_index=end_idx,
                     lap_time=float(lap_time),
-                    is_flying=is_flying
+                    is_flying=is_flying,
+                    sectors=sectors
                 ))
                 
                 start_idx = i
@@ -134,12 +174,14 @@ class TelemetryParser:
         if start_idx < len(laps_raw):
             end_idx = len(laps_raw) - 1
             lap_time = times_raw[end_idx] - times_raw[start_idx]
+            sectors = calculate_sectors(start_idx, end_idx)
             self.laps.append(Lap(
                 lap_number=int(current_lap_val),
                 start_index=start_idx,
                 end_index=end_idx,
                 lap_time=float(lap_time),
-                is_flying=False
+                is_flying=False,
+                sectors=sectors
             ))
 
     def get_lap_data(self, lap_number, channels):
@@ -171,3 +213,73 @@ class TelemetryParser:
     def get_channels(self):
         """Returns a list of all available variable names in the telemetry file."""
         return self.var_names
+
+class LiveMonitor:
+    """Uses irsdk to poll live telemetry at 60Hz and maintain a buffer."""
+    def __init__(self):
+        self.ir = irsdk.IRSDK()
+        self.current_lap = -1
+        self.lap_buffer = [] # List of dicts for the current lap
+        self.player_idx = 0
+        self.session_info = None
+
+    def poll_live_data(self):
+        """Polls live telemetry from iRacing SDK."""
+        if not self.ir.is_connected:
+            if not self.ir.startup():
+                return None
+        
+        # Check if simulation is actually running/providing data
+        if not self.ir.is_initialized:
+            return None
+            
+        try:
+            # Refresh session info if not loaded
+            if self.session_info is None:
+                yaml_data = self.ir.session_info_dict
+                self.session_info = yaml_data
+                self.player_idx = yaml_data.get('DriverInfo', {}).get('DriverCarIdx', 0)
+
+            # Extract data
+            data = {
+                'RPM': self.ir['RPM'],
+                'Gear': self.ir['Gear'],
+                'Speed': self.ir['Speed'],
+                'Throttle': self.ir['Throttle'],
+                'Brake': self.ir['Brake'],
+                'FuelLevel': self.ir['FuelLevel'],
+                'SessionTime': self.ir['SessionTime'],
+                'Lap': self.ir['Lap'],
+                'LapDistPct': self.ir['LapDistPct'],
+                'LapCurrentLapTime': self.ir['LapCurrentLapTime'],
+                'LatAccel': self.ir['LatAccel'],
+                'LFtempL': self.ir['LFtempL'], 'LFtempM': self.ir['LFtempM'], 'LFtempR': self.ir['LFtempR'],
+                'RFtempL': self.ir['RFtempL'], 'RFtempM': self.ir['RFtempM'], 'RFtempR': self.ir['RFtempR'],
+                'LRtempL': self.ir['LRtempL'], 'LRtempM': self.ir['LRtempM'], 'LRtempR': self.ir['LRtempR'],
+                'RRtempL': self.ir['RRtempL'], 'RRtempM': self.ir['RRtempM'], 'RRtempR': self.ir['RRtempR'],
+            }
+            
+            # Handle array channels
+            for col in ['CarIdxX', 'CarIdxY']:
+                val = self.ir[col]
+                if isinstance(val, (list, tuple)):
+                    data[col] = val[self.player_idx] if len(val) > self.player_idx else 0
+                else:
+                    data[col] = val
+
+            # Lap buffering logic
+            if data['Lap'] != self.current_lap:
+                self.current_lap = data['Lap']
+                self.lap_buffer = [] # Reset for new lap
+            
+            self.lap_buffer.append(data)
+            return data
+            
+        except Exception:
+            return None
+
+    def get_current_lap_df(self):
+        """Returns the buffered data for the current lap as a DataFrame."""
+        if not self.lap_buffer:
+            return pd.DataFrame()
+        return pd.DataFrame(self.lap_buffer)
